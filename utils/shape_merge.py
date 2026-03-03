@@ -52,8 +52,16 @@ from typing import Optional
 # CSV columns produced by BaseKernelInfoParser.save_individual_csv
 _SHAPE_COLS = ("Dims", "Data Type", "Input/Output")
 _CSV_HEADER = [
-    "Name", "Dims", "Data Type", "Input/Output", "Descriptions",
-    "Duration (us)", "op", "operation", "Source Code", "Call Stack",
+    "Name",
+    "Dims",
+    "Data Type",
+    "Input/Output",
+    "Descriptions",
+    "Duration (us)",
+    "op",
+    "operation",
+    "Source Code",
+    "Call Stack",
 ]
 
 
@@ -62,7 +70,7 @@ _CSV_HEADER = [
 # ---------------------------------------------------------------------------
 _RANK_STAGE_RE = re.compile(
     r"(TP-\d+(?:-DP-\d+)?(?:-EP-\d+)?)"  # rank identifier
-    r"-(EXTEND|DECODE)",                   # stage
+    r"-(EXTEND|DECODE)",  # stage
     re.IGNORECASE,
 )
 
@@ -179,7 +187,11 @@ def merge_shapes(
 
     # Write output
     os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
-    fieldnames = _CSV_HEADER if set(_CSV_HEADER).issubset(merged_rows[0].keys()) else list(merged_rows[0].keys())
+    fieldnames = (
+        _CSV_HEADER
+        if set(_CSV_HEADER).issubset(merged_rows[0].keys())
+        else list(merged_rows[0].keys())
+    )
     with open(output_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -257,10 +269,14 @@ def merge_shapes_dir(
         sc = shape_index.get(key)
         if sc is None:
             if verbose:
-                print(f"[shape_merge] No shape CSV for {key} — skipping {os.path.basename(tc)}")
+                print(
+                    f"[shape_merge] No shape CSV for {key} — skipping {os.path.basename(tc)}"
+                )
             continue
 
-        out_name = os.path.basename(tc).replace(".trace.csv", "_merged.trace.csv")
+        out_name = os.path.basename(tc).replace(
+            ".trace.csv", "_merged.trace.csv"
+        )
         out_path = os.path.join(output_dir, out_name)
         merge_shapes(tc, sc, out_path, verbose=verbose)
         results.append(out_path)
@@ -305,20 +321,27 @@ def main(argv: Optional[list] = None) -> int:
     verbose = not args.quiet
 
     if args.timing_csv and args.shape_csv:
-        out = merge_shapes(args.timing_csv, args.shape_csv, args.output_csv, verbose=verbose)
+        out = merge_shapes(
+            args.timing_csv, args.shape_csv, args.output_csv, verbose=verbose
+        )
         print(f"Merged CSV: {out}")
         return 0
 
     if args.timing_dir and args.shape_dir:
         results = merge_shapes_dir(
-            args.timing_dir, args.shape_dir, args.output_dir,
-            stage=args.stage, verbose=verbose,
+            args.timing_dir,
+            args.shape_dir,
+            args.output_dir,
+            stage=args.stage,
+            verbose=verbose,
         )
         for r in results:
             print(f"  {r}")
         return 0
 
-    print("Error: provide either (--timing-csv + --shape-csv) or (--timing-dir + --shape-dir)")
+    print(
+        "Error: provide either (--timing-csv + --shape-csv) or (--timing-dir + --shape-dir)"
+    )
     return 1
 
 
