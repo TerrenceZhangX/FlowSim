@@ -45,10 +45,11 @@ PORT=30001
 SCRIPTS="/workspace/scripts"
 export PYTHONPATH="/workspace/utils${PYTHONPATH:+:$PYTHONPATH}"
 
-BS_GRID="1,4,16,64,128,256"
-CTX_GRID="2048,4096,8192,16384,32768"
-INPUT_LEN_GRID="256,512,1024,2048,4096"
-EXISTING_CTX_GRID="0,4096,8192,16384"
+BS_GRID="1,4,16,64,128"
+CTX_GRID="2048,4096,8192,12288,16384,24576,32768"
+INPUT_LEN_GRID="32,64,128,256,512,1024,2048,4096"
+EXISTING_CTX_GRID="2048,4096,8192,12288,16384,24576,32768"
+PREFILL_BS_GRID="1,4,16,64,128"
 
 RUN_CONFIGS="${RUN_CONFIGS:-P1,P2,P3,P4}"
 
@@ -126,6 +127,11 @@ run_config() {
     local dir_name="${DIR_NAMES[$tag]}"
     local opts="${SERVER_OPTS[$tag]}"
 
+    # For prefill mode, use a separate output directory
+    if [[ "$MODE" == "prefill" ]]; then
+        dir_name="${dir_name}_prefill"
+    fi
+
     echo ""
     echo "========================================================"
     echo "  $tag [$MODE]: $opts"
@@ -138,6 +144,8 @@ run_config() {
         --server-opts "--model-path $MODEL --host $HOST --port $PORT $opts" \
         --bs-grid "$BS_GRID" --ctx-grid "$CTX_GRID" \
         --input-len-grid "$INPUT_LEN_GRID" --existing-ctx-grid "$EXISTING_CTX_GRID" \
+        --prefill-bs-grid "$PREFILL_BS_GRID" \
+        --disable-chunked-prefill \
         --output-dir "/workspace/$dir_name" \
         --log-dir "/workspace/sweep_server_logs/${tag}_${MODE}"
 

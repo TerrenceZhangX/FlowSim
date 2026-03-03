@@ -89,10 +89,12 @@ from shape_merge import merge_shapes_dir
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_BS_GRID = [1, 4, 16, 64, 256]
-DEFAULT_CTX_GRID = [512, 2048, 8192, 32768]
-DEFAULT_INPUT_LEN_GRID = [256, 512, 1024, 2048, 4096]
-DEFAULT_EXISTING_CTX_GRID = [0, 4096, 8192, 16384]
+DEFAULT_BS_GRID = [1, 4, 16, 64, 128]
+DEFAULT_CTX_GRID = [2048, 4096, 8192, 12288, 16384, 24576, 32768]
+DEFAULT_INPUT_LEN_GRID = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+DEFAULT_EXISTING_CTX_GRID = [2048, 4096, 8192, 12288, 16384, 24576, 32768]
+DEFAULT_PREFILL_BS_GRID = [1, 4, 16, 64, 128]
+DEFAULT_MAX_PREFILL_TOKENS = 131072
 DEFAULT_WARMUP_N = 5
 DEFAULT_DECODE_TOKENS = 32
 DEFAULT_NUM_STEPS = 1
@@ -358,40 +360,37 @@ def collect_one(
 def collect_one_prefill(
     host: str,
     port: int,
+    bs: int,
     input_len: int,
     existing_ctx: int,
     output_dir: str,
     warmup_n: int,
     num_steps: int,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """Collect one EXTEND trace for a prefill sweep point.
 
-    Implements the multi-turn prefill profiling protocol:
+    Returns ``(traces, ok)`` where *ok* is False if OOM or fatal error
+    occurred (caller should skip larger batch sizes).
+
+    Protocol:
 
     1. ``/flush_cache`` — clear radix + KV cache.
-    2. (if existing_ctx > 0) Send a *seed* request whose prompt has
-       ``existing_ctx`` tokens.  This populates the radix cache.
+    2. (if existing_ctx > 0) Send *bs* identical seed requests to
+       populate the radix cache with ``existing_ctx`` tokens.
     3. ``/start_profile`` — arm the profiler.
-    4. Send a *profiling* request whose prompt has
-       ``existing_ctx + input_len`` tokens.  The first ``existing_ctx``
-       tokens are **identical** to the seed prompt (radix cache hit),
-       so the EXTEND phase processes only the trailing ``input_len``
-       new tokens — exactly what we want to measure.
+    4. Send *bs* concurrent profiling requests, each with
+       ``existing_ctx + input_len`` tokens.  The prefix hits cache;
+       EXTEND processes only ``input_len`` new tokens per request.
     5. Wait for traces.
 
-    For ``existing_ctx == 0`` (cold prefill / turn-1), step 2 is skipped
-    and the profiling request is a fresh prompt of length ``input_len``.
+    For ``existing_ctx == 0`` (cold prefill), step 2 is skipped.
     """
     os.makedirs(output_dir, exist_ok=True)
     total_prompt = existing_ctx + input_len
 
-    # Build token-exact prompts using raw token IDs.
-    # SGLang's /generate accepts ``input_ids`` (list of ints) directly,
-    # guaranteeing the exact token count with zero tokenizer error.
-    # We use two non-overlapping ID ranges so the extension part is a
-    # guaranteed radix-cache miss while the prefix part is a hit.
-    PREFIX_TOKEN = 1000  # arbitrary valid token for the cached prefix
-    EXTEND_TOKEN = 2000  # different token for the new (profiled) part
+    # Token-exact prompts via raw token IDs.
+    PREFIX_TOKEN = 1000
+    EXTEND_TOKEN = 2000
 
     seed_ids: list[int] = (
         [PREFIX_TOKEN] * existing_ctx if existing_ctx > 0 else []
@@ -402,7 +401,7 @@ def collect_one_prefill(
 
     url = f"http://{host}:{port}/generate"
 
-    # ── Step 0: warmup (CUDA graph capture) ──
+    # ── Step 0: warmup ──
     warmup(host, port, n=warmup_n, bs=1, ctx=max(total_prompt, 2048))
 
     # ── Step 1: flush cache ──
@@ -421,37 +420,52 @@ def collect_one_prefill(
             print("[prefill] Seed request done ✓")
         except Exception as exc:
             print(f"[prefill] Seed FAILED: {exc}")
-            return []
+            return [], False
         time.sleep(0.5)
 
     # ── Step 3: start profiler ──
     if not start_stage_profile(host, port, output_dir, num_steps):
         print("[ERROR] Could not start profiler — skipping")
-        return []
+        return [], True  # profiler issue, not OOM
 
-    # ── Step 4: send profiling request ──
-    if existing_ctx > 0:
-        print(
-            f"[prefill] Sending profile request: "
-            f"prefix={existing_ctx} (cached) + new={input_len} tokens"
-        )
+    # ── Step 4: send bs profiling requests as a single batch ──
+    print(
+        f"[prefill] bs={bs}  input_len={input_len}  "
+        f"existing_ctx={existing_ctx}  total_tokens={bs * total_prompt}"
+    )
+
+    # SGLang /generate accepts input_ids as List[List[int]] for batched requests.
+    # This ensures all bs prompts are scheduled in ONE extend batch.
+    if bs == 1:
+        batch_ids = profile_ids  # List[int]
     else:
-        print(
-            f"[prefill] Sending cold prefill request: "
-            f"input_len={input_len} tokens (no existing KV)"
-        )
+        batch_ids = [profile_ids] * bs  # List[List[int]]
+
     payload_profile = {
-        "input_ids": profile_ids,
+        "input_ids": batch_ids,
         "sampling_params": {
             "max_new_tokens": DEFAULT_DECODE_TOKENS,
             "temperature": 0,
         },
     }
+
+    oom_detected = False
     try:
         _post(url, payload_profile, timeout=600)
-        print("[prefill] Profile request done ✓")
+        print(f"[prefill] Batch of {bs} done ✓")
     except Exception as exc:
-        print(f"[prefill] Profile request FAILED: {exc}")
+        exc_str = str(exc).lower()
+        if "out of memory" in exc_str or "oom" in exc_str:
+            print(f"[prefill] OOM at bs={bs} — stopping")
+            oom_detected = True
+        else:
+            print(f"[prefill] Profile request FAILED: {exc}")
+
+    if oom_detected:
+        # Wait a moment for server to recover, then flush
+        time.sleep(3)
+        flush_cache(host, port)
+        return [], False
 
     # ── Step 5: wait for traces ──
     print("[wait] Waiting for profiler to auto-stop …")
@@ -472,7 +486,7 @@ def collect_one_prefill(
         print(f"       {os.path.basename(t)}  ({sz:.1f} KB)")
     print()
 
-    return traces
+    return traces, True
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +799,27 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         default=",".join(str(x) for x in DEFAULT_EXISTING_CTX_GRID),
         help="Comma-separated existing context lengths for prefill sweep",
     )
+    grid.add_argument(
+        "--prefill-bs-grid",
+        type=str,
+        default=",".join(str(x) for x in DEFAULT_PREFILL_BS_GRID),
+        help="Comma-separated batch sizes for prefill sweep (auto-stops on OOM)",
+    )
+    grid.add_argument(
+        "--disable-chunked-prefill",
+        action="store_true",
+        help="Add --chunked-prefill-size -1 to server opts to disable chunking",
+    )
+    grid.add_argument(
+        "--max-prefill-tokens",
+        type=int,
+        default=DEFAULT_MAX_PREFILL_TOKENS,
+        help=(
+            "Max tokens per prefill batch (must match server config).  "
+            "Used to compute max bs = max_prefill_tokens // input_len "
+            "and skip larger batch sizes without triggering OOM."
+        ),
+    )
 
     out = p.add_argument_group("output")
     out.add_argument(
@@ -823,8 +858,22 @@ def _start_server(
     if not args.server_opts:
         print("[ERROR] --launch-server requires --server-opts")
         raise SystemExit(1)
+    server_opts = args.server_opts
+    # Disable chunked prefill for saturation testing
+    if getattr(args, "disable_chunked_prefill", False):
+        max_pt = getattr(args, "max_prefill_tokens", DEFAULT_MAX_PREFILL_TOKENS)
+        if "--chunked-prefill-size" not in server_opts:
+            server_opts += (
+                f" --chunked-prefill-size -1"
+                f" --max-prefill-tokens {max_pt}"
+                f" --mem-fraction-static 0.80"
+            )
+            print(
+                f"[server] Chunked prefill disabled"
+                f" (size=-1, max_prefill={max_pt}, mem_frac=0.80)"
+            )
     proc = launch_server(
-        args.server_opts,
+        server_opts,
         args.log_dir,
         disable_cuda_graph=disable_cuda_graph,
     )
@@ -911,58 +960,123 @@ def _run_shapes(args) -> int:
 
 
 def _run_prefill(args, summary: list[dict]) -> int:
-    """Collect prefill traces over the (input_len, existing_ctx) grid."""
+    """Collect prefill traces over the (bs, input_len, existing_ctx) grid.
+
+    For each (input_len, existing_ctx) pair, compute the maximum batch size
+    that fits within ``max_prefill_tokens`` and skip anything larger.
+    If an OOM is still detected at runtime, larger *bs* values for the
+    same (input_len, existing_ctx) are also skipped.
+    """
+    prefill_bs_list = [int(x) for x in args.prefill_bs_grid.split(",")]
     input_len_list = [int(x) for x in args.input_len_grid.split(",")]
     ctx_list = [int(x) for x in args.existing_ctx_grid.split(",")]
+    max_prefill = getattr(
+        args, "max_prefill_tokens", DEFAULT_MAX_PREFILL_TOKENS
+    )
 
-    total = len(input_len_list) * len(ctx_list)
+    total = len(prefill_bs_list) * len(input_len_list) * len(ctx_list)
     idx = 0
+    skip_count = 0
 
     for input_len in input_len_list:
+        # Pre-compute the maximum bs that fits within max_prefill_tokens
+        max_bs_for_input = max_prefill // input_len if input_len > 0 else 1
+        print(
+            f"\n[prefill] input_len={input_len}: "
+            f"max_bs={max_bs_for_input} "
+            f"(max_prefill_tokens={max_prefill})"
+        )
+
         for existing_ctx in ctx_list:
-            idx += 1
-            tag = f"input{input_len}_ctx{existing_ctx}"
-            sub_dir = os.path.join(args.output_dir, tag)
-            print(
-                f"{'=' * 60}\n"
-                f"[{idx}/{total}] input_len={input_len}  existing_ctx={existing_ctx}\n"
-                f"{'=' * 60}"
-            )
-            traces = collect_one_prefill(
-                host=args.host,
-                port=args.port,
-                input_len=input_len,
-                existing_ctx=existing_ctx,
-                output_dir=sub_dir,
-                warmup_n=args.warmup_n,
-                num_steps=args.num_steps,
-            )
-            summary.append(
-                {
+            oom_hit = False
+            for bs in prefill_bs_list:
+                idx += 1
+
+                # Skip if bs exceeds the capacity limit
+                if bs > max_bs_for_input or oom_hit:
+                    reason = (
+                        "oom"
+                        if oom_hit
+                        else f"exceeds max_prefill ({bs}*{input_len}={bs * input_len} > {max_prefill})"
+                    )
+                    print(
+                        f"[{idx}/{total}] SKIP bs={bs} "
+                        f"input={input_len} ctx={existing_ctx} ({reason})"
+                    )
+                    summary.append(
+                        {
+                            "bs": bs,
+                            "input_len": input_len,
+                            "existing_ctx": existing_ctx,
+                            "traces": 0,
+                            "skipped": reason,
+                        }
+                    )
+                    skip_count += 1
+                    continue
+
+                tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
+                sub_dir = os.path.join(args.output_dir, tag)
+                print(
+                    f"{'=' * 60}\n"
+                    f"[{idx}/{total}] bs={bs}  input_len={input_len}  "
+                    f"existing_ctx={existing_ctx}\n"
+                    f"{'=' * 60}"
+                )
+                traces, ok = collect_one_prefill(
+                    host=args.host,
+                    port=args.port,
+                    bs=bs,
+                    input_len=input_len,
+                    existing_ctx=existing_ctx,
+                    output_dir=sub_dir,
+                    warmup_n=args.warmup_n,
+                    num_steps=args.num_steps,
+                )
+
+                if not ok:
+                    oom_hit = True
+                    summary.append(
+                        {
+                            "bs": bs,
+                            "input_len": input_len,
+                            "existing_ctx": existing_ctx,
+                            "traces": 0,
+                            "skipped": "oom",
+                        }
+                    )
+                    skip_count += 1
+                    continue
+
+                entry: dict = {
+                    "bs": bs,
                     "input_len": input_len,
                     "existing_ctx": existing_ctx,
                     "traces": len(traces),
                     "dir": sub_dir,
                 }
-            )
+                summary.append(entry)
 
-            if traces:
-                parse_dir = os.path.join(sub_dir, "parsed")
-                parse_traces(sub_dir, parse_dir)
+                if traces:
+                    parse_dir = os.path.join(sub_dir, "parsed")
+                    parse_traces(sub_dir, parse_dir)
 
-            if traces:
-                for stage in ("EXTEND", "DECODE"):
-                    result = analyze_traces(sub_dir, parse_dir, stage=stage)
-                    if result:
-                        print_analysis(result)
-                        analysis_path = os.path.join(
-                            sub_dir, f"analysis_{stage.lower()}.json"
-                        )
-                        with open(analysis_path, "w") as af:
-                            json.dump(result, af, indent=2)
-                        summary[-1][f"{stage.lower()}_total_ms"] = round(
-                            result["total_kernel_us"] / 1000, 2
-                        )
+                if traces:
+                    for stage in ("EXTEND", "DECODE"):
+                        result = analyze_traces(sub_dir, parse_dir, stage=stage)
+                        if result:
+                            print_analysis(result)
+                            analysis_path = os.path.join(
+                                sub_dir, f"analysis_{stage.lower()}.json"
+                            )
+                            with open(analysis_path, "w") as af:
+                                json.dump(result, af, indent=2)
+                            entry[f"{stage.lower()}_total_ms"] = round(
+                                result["total_kernel_us"] / 1000, 2
+                            )
+
+    if skip_count:
+        print(f"\n[prefill] {skip_count} points skipped (capacity/OOM)")
     return 0
 
 
@@ -976,16 +1090,18 @@ def _write_summary(args, summary: list[dict]) -> None:
         json.dump(summary, f, indent=2)
     print(f"\n[summary] {summary_path}")
     for s in summary:
-        status = "✓" if s["traces"] > 0 else "✗"
-        if "bs" in s:
+        status = "✓" if s["traces"] > 0 else ("⊘" if s.get("skipped") else "✗")
+        if "input_len" in s:
             print(
-                f"  {status} bs={s['bs']:>4}  ctx={s['ctx']:>6}  "
+                f"  {status} bs={s.get('bs', 1):>4}  "
+                f"input={s['input_len']:>5}  "
+                f"ctx={s['existing_ctx']:>6}  "
                 f"traces={s['traces']}"
+                + (f"  ({s['skipped']})" if s.get("skipped") else "")
             )
         else:
             print(
-                f"  {status} input_len={s['input_len']:>5}  "
-                f"existing_ctx={s['existing_ctx']:>6}  "
+                f"  {status} bs={s['bs']:>4}  ctx={s['ctx']:>6}  "
                 f"traces={s['traces']}"
             )
 
