@@ -2,9 +2,7 @@ import pytest
 import sys
 import os
 
-sys.path.insert(
-    0, os.path.abspath("/flowsim/workload/framework/sglang/python")
-)
+sys.path.insert(0, os.path.abspath("/flowsim/workload/framework/sglang/python"))
 from sglang.bench_serving import generate_defined_len_requests
 
 

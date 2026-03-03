@@ -6,9 +6,7 @@ import importlib.util
 import pytest
 import os
 
-sys.path.insert(
-    0, os.path.abspath("/flowsim/workload/framework/sglang/python")
-)
+sys.path.insert(0, os.path.abspath("/flowsim/workload/framework/sglang/python"))
 
 import sglang.bench_serving as bs
 

@@ -174,6 +174,113 @@ ls -lh /data/flowsim-simulate/     # Parsed CSV, summary, simulation artifacts
 
 ---
 
+## Stage Profiling (`run_stage_profile.py`)
+
+`scripts/run_stage_profile.py` is the single entry-point for **stage-separated** profiling: it captures prefill (EXTEND) and decode traces independently, parses them, runs cross-rank kernel analysis, and optionally collects kernel input shapes.
+
+### Quick reference
+
+| Mode | What it does |
+|---|---|
+| `--collect perf` | Sweep every (bs, ctx) point → trace → parse → cross-rank analysis |
+| `--collect shapes` | Re-run every point **without CUDA graph** to capture kernel input shapes, then merge shapes into timing CSVs |
+| `--collect all` | Both phases back-to-back (auto-restarts the server in between). Requires `--launch-server`. |
+
+`--collect` is required. Use `perf`, `shapes`, or `all`.
+
+### Examples
+
+**Collect perf traces** (server already running):
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect perf \
+    --output-dir /workspace/sweep_P1_tp4 \
+    --host 0.0.0.0 --port 30001
+```
+
+**Collect perf traces with auto-launched server:**
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect perf \
+    --output-dir /workspace/sweep_P1_tp4 \
+    --launch-server \
+    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+```
+
+**Collect shapes only** (requires a no-CUDA-graph server):
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect shapes \
+    --output-dir /workspace/sweep_P1_tp4 \
+    --launch-server \
+    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+```
+
+When `--collect shapes` is used with `--launch-server`, the server is automatically started with `--disable-cuda-graph --disable-cuda-graph-padding`.
+
+**Full pipeline** (perf → auto-restart → shapes → merge):
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect all \
+    --output-dir /workspace/sweep_P1_tp4 \
+    --launch-server \
+    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+```
+
+### Custom sweep grids
+
+Default grid: `bs ∈ {1,4,16,64,128,256}`, `ctx ∈ {2048,4096,8192,16384,32768}`.
+
+Override with `--bs-grid` and `--ctx-grid`:
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect perf \
+    --bs-grid 1,8,32 --ctx-grid 512,2048 \
+    --output-dir /workspace/my_sweep
+```
+
+### Output structure
+
+```
+sweep_P1_tp4/
+├── sweep_summary.json
+├── bs1_ctx2048/
+│   ├── *-TP-*-EXTEND.trace.json.gz
+│   ├── *-TP-*-DECODE.trace.json.gz
+│   ├── parsed/
+│   │   ├── TP-0-EXTEND.csv
+│   │   ├── TP-0-DECODE.csv
+│   │   └── ...
+│   ├── analysis_extend.json
+│   └── analysis_decode.json
+├── bs4_ctx2048/
+│   └── ...
+└── ...
+```
+
+After `--collect shapes`, each `parsed/TP-*-DECODE.csv` gains an `Input Dims` column with kernel tensor shapes.
+
+### Helper scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/run_configs.sh {perf,shapes,all,reanalyze}` | Run `--collect <mode>` across all 4 parallelism configs (P1-P4), or re-run offline analysis. Filter with `RUN_CONFIGS=P1,P3`. |
+
+### Utilities (`utils/`)
+
+| File | Purpose |
+|---|---|
+| `utils/cross_rank_agg.py` | Cross-rank kernel aggregation (symmetric collectives → min, asymmetric → max, compute → mean) |
+| `utils/shape_merge.py` | Merge kernel shape data into timing CSVs |
+| `utils/merge_trace.py` | Merge multi-rank traces into a single Perfetto-compatible file |
+
+---
+
 ## For Developers
 
 ### Customizing Profiling Workloads

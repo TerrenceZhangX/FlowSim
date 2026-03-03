@@ -16,7 +16,6 @@ from backend.interface import (
     run_init_server,
 )
 
-
 # Use same artifact dir env as other tests
 ARTIFACT_DIR = Path(os.environ.get("ARTIFACT_DIR", "artifacts"))
 

@@ -15,11 +15,14 @@ Workflow
    after 1 prefill batch + 1 decode batch.
 5. Optionally parse the resulting traces with ``run_parse.py``.
 
-Sweep mode
-----------
-With ``--sweep``, the script iterates over a grid of (batch_size, context_len)
-and collects one (EXTEND + DECODE) trace pair per configuration.  Results are
-organised into ``<output_dir>/<bs>_<ctx>/`` sub-directories.
+Modes
+-----
+Use ``--collect {perf,shapes,all}`` to choose what to collect:
+
+- ``perf``  — sweep a (bs, ctx) grid, collect traces, parse, and analyze.
+- ``shapes`` — re-collect without CUDA graph to capture kernel input shapes,
+  then merge shapes into the timing CSVs.
+- ``all``   — run perf, auto-restart the server, then run shapes.
 
 Notes
 -----
@@ -36,17 +39,17 @@ Example — single point
       --bs 1 --ctx 2048 --decode-tokens 32 \\
       --output-dir /flowsim/stage_traces
 
-Example — sweep
+Example — perf sweep
   python scripts/run_stage_profile.py \\
+      --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --sweep \\
       --output-dir /flowsim/stage_traces_sweep
 
-Example — launch server + profile (all-in-one)
+Example — launch server + full pipeline (perf → shapes)
   python scripts/run_stage_profile.py \\
+      --collect all \\
       --launch-server \\
       --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001" \\
-      --sweep \\
       --output-dir /flowsim/stage_traces_sweep
 """
 
@@ -69,6 +72,19 @@ import time
 from collections import defaultdict
 from typing import Optional
 
+# Add utils/ to path for reusable modules
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_UTILS_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "utils")
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
+
+from cross_rank_agg import (
+    classify_kernel as _classify_kernel,
+    is_comm as _is_comm,
+    aggregate as analyze_traces_from_csvs,
+    print_result as print_analysis,
+)
+from shape_merge import merge_shapes_dir
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -182,7 +198,9 @@ def send_requests(
         print(f"[request] bs=1  ctx≈{ctx}  decode={decode_tokens}")
         try:
             resp = _post(url, payload, timeout=600)
-            out_text = resp.get("text", "") if isinstance(resp, dict) else str(resp)
+            out_text = (
+                resp.get("text", "") if isinstance(resp, dict) else str(resp)
+            )
             print(f"  req 0: {len(out_text.split())} output tokens")
         except Exception as exc:
             print(f"  req 0: FAILED {exc}")
@@ -259,7 +277,9 @@ def collect_one(
     prev_count = len(traces)
     for _ in range(6):  # up to 12s extra
         time.sleep(2)
-        new_traces = sorted(glob.glob(os.path.join(output_dir, "*.trace.json.gz")))
+        new_traces = sorted(
+            glob.glob(os.path.join(output_dir, "*.trace.json.gz"))
+        )
         if len(new_traces) == prev_count:
             break
         traces = new_traces
@@ -283,19 +303,40 @@ def collect_one(
 # ---------------------------------------------------------------------------
 # Server launch (optional)
 # ---------------------------------------------------------------------------
-def launch_server(server_opts: str, log_dir: str) -> subprocess.Popen:
-    """Start an SGLang server process with profiling env vars."""
+def launch_server(
+    server_opts: str,
+    log_dir: str,
+    *,
+    disable_cuda_graph: bool = False,
+) -> subprocess.Popen:
+    """Start an SGLang server process with profiling env vars.
+
+    Parameters
+    ----------
+    disable_cuda_graph : bool
+        If True, append ``--disable-cuda-graph --disable-cuda-graph-padding``
+        to the server command.  Used for shape collection where the PyTorch
+        profiler needs full kernel-level ``Input Dims`` info.
+    """
     os.makedirs(log_dir, exist_ok=True)
     ts = int(time.time())
-    stdout_f = open(os.path.join(log_dir, f"server_{ts}.stdout.log"), "w")
-    stderr_f = open(os.path.join(log_dir, f"server_{ts}.stderr.log"), "w")
+    prefix = "shape_server" if disable_cuda_graph else "server"
+    stdout_f = open(os.path.join(log_dir, f"{prefix}_{ts}.stdout.log"), "w")
+    stderr_f = open(os.path.join(log_dir, f"{prefix}_{ts}.stderr.log"), "w")
 
     env = os.environ.copy()
     env["SGLANG_PROFILE_KERNELS"] = "1"
 
     args = shlex.split(server_opts)
+    if disable_cuda_graph:
+        if "--disable-cuda-graph" not in args:
+            args.append("--disable-cuda-graph")
+        if "--disable-cuda-graph-padding" not in args:
+            args.append("--disable-cuda-graph-padding")
+
     cmd = [sys.executable, "-m", "sglang.launch_server"] + args
-    print(f"[server] Launching: {' '.join(cmd)}")
+    label = "(no-CUDA-graph)" if disable_cuda_graph else ""
+    print(f"[server] Launching {label}: {' '.join(cmd)}")
     preexec = getattr(os, "setsid", None)
     proc = subprocess.Popen(
         cmd,
@@ -321,43 +362,7 @@ def kill_server(proc: subprocess.Popen) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Kernel classification
-# ---------------------------------------------------------------------------
-_COMM_KEYWORDS = ("cross_device_reduce", "all_reduce", "all_gather", "ncclKernel", "ncclDev")
-
-
-def _classify_kernel(name: str) -> str:
-    """Map a CUDA kernel name to a human-readable category."""
-    nl = name.lower()
-    if any(k in nl for k in _COMM_KEYWORDS):
-        if "all_gather" in nl or "AllGather" in name:
-            return "all_gather"
-        return "all_reduce"
-    if "fused_moe" in nl:
-        return "moe"
-    if "deep_gemm" in nl or "fp8_gemm" in nl:
-        return "gemm_fp8"
-    if "flash" in nl or "sm90" in nl or "fmha" in nl:
-        return "attention"
-    if "nvjet" in nl or "splitk" in nl:
-        return "nvjet_gemm"
-    if "rmsnorm" in nl or "rms_norm" in nl or "fused_add_rmsnorm" in nl:
-        return "rmsnorm"
-    if "per_token" in nl or "quant" in nl:
-        return "quantize"
-    if "topk" in nl or "gating" in nl:
-        return "topk_gating"
-    if "moe_sum" in nl or "moe_align" in nl:
-        return "moe_misc"
-    return "other"
-
-
-def _is_comm(cat: str) -> bool:
-    return cat in ("all_reduce", "all_gather")
-
-
-# ---------------------------------------------------------------------------
-# Analyze: multi-rank aggregation with min-comm
+# Analyze: thin wrappers around cross_rank_agg module
 # ---------------------------------------------------------------------------
 def analyze_traces(
     trace_dir: str,
@@ -366,113 +371,18 @@ def analyze_traces(
 ) -> dict:
     """Aggregate kernel stats across TP ranks for one (bs, ctx, stage).
 
-    For **communication** kernels (``all_reduce``, ``all_gather``), the
-    ``cross_device_reduce`` kernel includes spin-wait synchronisation time
-    on all ranks except the last to arrive.  Therefore we report the
-    **minimum** total communication time across ranks as the true cost.
-
-    For **compute** kernels the values are nearly identical across ranks,
-    so we simply average them.
-
-    Returns a dict::
-
-        {
-            "stage": "DECODE",
-            "num_ranks": 4,
-            "total_kernel_us": 10300.0,   # corrected total
-            "categories": {
-                "moe":        {"us": 2580, "pct": 25.0},
-                "all_reduce": {"us":  880, "pct":  8.5, "method": "min-across-ranks"},
-                ...
-            },
-            "per_rank_comm_us": [147320, 173700, 174020, 880],
-        }
+    Delegates to ``cross_rank_agg.aggregate()`` with auto-parse fallback.
     """
     csvs = sorted(glob.glob(os.path.join(parse_output_dir, f"*{stage}*.csv")))
     if not csvs:
-        # Try parsing first
         parse_traces(trace_dir, parse_output_dir)
-        csvs = sorted(glob.glob(os.path.join(parse_output_dir, f"*{stage}*.csv")))
+        csvs = sorted(
+            glob.glob(os.path.join(parse_output_dir, f"*{stage}*.csv"))
+        )
     if not csvs:
         print(f"[analyze] No {stage} CSVs found in {parse_output_dir}")
         return {}
-
-    # Per-rank stats
-    rank_stats: list[dict[str, float]] = []  # [{cat: total_us}, ...]
-    for csv_path in csvs:
-        cats: dict[str, float] = defaultdict(float)
-        with open(csv_path, newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                name = row.get("Name", "")
-                dur = float(row.get("Duration (us)", 0))
-                cat = _classify_kernel(name)
-                cats[cat] += dur
-        rank_stats.append(dict(cats))
-
-    num_ranks = len(rank_stats)
-    all_cats = sorted({c for s in rank_stats for c in s})
-
-    # Collect per-rank communication totals
-    per_rank_comm = []
-    for s in rank_stats:
-        per_rank_comm.append(
-            sum(v for k, v in s.items() if _is_comm(k))
-        )
-
-    # Build result: min for comm, mean for compute
-    result_cats: dict[str, dict] = {}
-    for cat in all_cats:
-        vals = [s.get(cat, 0) for s in rank_stats]
-        if _is_comm(cat):
-            chosen = min(vals)
-            result_cats[cat] = {
-                "us": round(chosen, 1),
-                "method": "min-across-ranks",
-                "all_ranks_us": [round(v, 1) for v in vals],
-            }
-        else:
-            chosen = sum(vals) / num_ranks
-            result_cats[cat] = {
-                "us": round(chosen, 1),
-                "method": "mean-across-ranks",
-            }
-
-    corrected_total = sum(c["us"] for c in result_cats.values())
-    for cat, info in result_cats.items():
-        info["pct"] = round(info["us"] / corrected_total * 100, 1) if corrected_total > 0 else 0
-
-    return {
-        "stage": stage,
-        "num_ranks": num_ranks,
-        "total_kernel_us": round(corrected_total, 1),
-        "categories": dict(sorted(result_cats.items(), key=lambda x: -x[1]["us"])),
-        "per_rank_comm_us": [round(v, 1) for v in per_rank_comm],
-    }
-
-
-def print_analysis(result: dict) -> None:
-    """Pretty-print an analysis result dict."""
-    if not result:
-        return
-    stage = result["stage"]
-    total = result["total_kernel_us"]
-    nr = result["num_ranks"]
-    print(f"\n{'=' * 60}")
-    print(f"  {stage}  (corrected, {nr} ranks, min-comm)")
-    print(f"  Total kernel time: {total / 1000:.2f} ms")
-    print(f"{'=' * 60}")
-    print(f"  {'Category':>20}  {'Time(ms)':>9}  {'Pct':>6}  Method")
-    print(f"  {'-' * 55}")
-    for cat, info in result["categories"].items():
-        ms = info["us"] / 1000
-        pct = info["pct"]
-        method = info.get("method", "")
-        extra = ""
-        if "all_ranks_us" in info:
-            extra = f"  (ranks: {[round(v/1000, 2) for v in info['all_ranks_us']]})"
-        print(f"  {cat:>20}  {ms:>9.2f}  {pct:>5.1f}%  {method}{extra}")
-    print()
+    return analyze_traces_from_csvs(csv_files=csvs, stage=stage)
 
 
 # ---------------------------------------------------------------------------
@@ -509,6 +419,123 @@ def parse_traces(trace_dir: str, parse_output_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shape collection (no-CUDA-graph pass)
+# ---------------------------------------------------------------------------
+def discover_grid(sweep_dir: str) -> list[tuple[int, int]]:
+    """Discover the (bs, ctx) grid from existing ``bs*_ctx*`` directories."""
+    grid = []
+    for entry in sorted(os.listdir(sweep_dir)):
+        if entry.startswith("bs"):
+            parts = entry.split("_")
+            try:
+                bs = int(parts[0].replace("bs", ""))
+                ctx = int(parts[1].replace("ctx", ""))
+                grid.append((bs, ctx))
+            except (ValueError, IndexError):
+                continue
+    return sorted(grid)
+
+
+def collect_shapes(
+    host: str,
+    port: int,
+    sweep_dir: str,
+    *,
+    decode_tokens: int = DEFAULT_DECODE_TOKENS,
+    warmup_n: int = 3,
+    num_steps: int = 1,
+) -> list[str]:
+    """Run a shape-only profiling pass for all (bs, ctx) in the sweep.
+
+    Collects traces into ``<sweep>/<bs_ctx>/shape_traces/`` and parses them
+    into ``<sweep>/<bs_ctx>/shape_parsed/``.  Shape data is needed to map
+    kernel names to tensor dimensions (unavailable when CUDA graph is active).
+    """
+    grid = discover_grid(sweep_dir)
+    if not grid:
+        print(f"[shapes] No bs*_ctx* dirs found in {sweep_dir}")
+        return []
+
+    print(f"[shapes] Collecting shapes for {len(grid)} (bs, ctx) points")
+    print(f"[shapes] Grid: {grid}\n")
+
+    # One global warmup with a medium config
+    mid = grid[len(grid) // 2]
+    warmup(host, port, n=warmup_n, bs=mid[0], ctx=mid[1])
+
+    results = []
+    for i, (bs, ctx) in enumerate(grid):
+        tag = f"bs{bs}_ctx{ctx}"
+        trace_dir = os.path.join(sweep_dir, tag, "shape_traces")
+        parse_dir = os.path.join(sweep_dir, tag, "shape_parsed")
+        os.makedirs(trace_dir, exist_ok=True)
+
+        # Skip if already collected
+        existing = glob.glob(os.path.join(parse_dir, "*DECODE*.csv"))
+        if existing:
+            print(f"[{i+1}/{len(grid)}] {tag}: shape CSVs exist, skipping")
+            results.append(parse_dir)
+            continue
+
+        print(f"[{i+1}/{len(grid)}] {tag}: collecting shape traces …")
+
+        if not start_stage_profile(host, port, trace_dir, num_steps):
+            print(f"  [WARN] Could not start profiler for {tag}")
+            continue
+
+        req_threads = send_requests(host, port, bs, ctx, decode_tokens)
+        traces = wait_for_traces(trace_dir, timeout=120)
+        # Stabilise
+        prev = len(traces)
+        for _ in range(6):
+            time.sleep(2)
+            new = sorted(glob.glob(os.path.join(trace_dir, "*.trace.json.gz")))
+            if len(new) == prev:
+                break
+            traces = new
+            prev = len(new)
+        print(f"  {len(traces)} trace files")
+
+        if req_threads:
+            for t in req_threads:
+                t.join(timeout=300)
+
+        if traces:
+            parse_traces(trace_dir, parse_dir)
+            results.append(parse_dir)
+
+    return results
+
+
+def merge_shapes(sweep_dir: str, stage: str = "DECODE") -> list[str]:
+    """Merge shape CSVs into timing CSVs for every (bs, ctx) in the sweep."""
+    grid = discover_grid(sweep_dir)
+    all_merged: list[str] = []
+    for bs, ctx in grid:
+        tag = f"bs{bs}_ctx{ctx}"
+        timing_dir = os.path.join(sweep_dir, tag, "parsed")
+        shape_dir = os.path.join(sweep_dir, tag, "shape_parsed")
+        merged_dir = os.path.join(sweep_dir, tag, "merged")
+        if not os.path.isdir(timing_dir):
+            print(f"[merge] {tag}: no timing parsed dir — skipping")
+            continue
+        if not os.path.isdir(shape_dir):
+            print(f"[merge] {tag}: no shape parsed dir — skipping")
+            continue
+        print(f"[merge] {tag} …")
+        merged = merge_shapes_dir(
+            timing_dir,
+            shape_dir,
+            merged_dir,
+            stage=stage,
+            verbose=True,
+        )
+        all_merged.extend(merged)
+    print(f"\n[merge] Total: {len(all_merged)} merged CSVs")
+    return all_merged
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
@@ -517,6 +544,20 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+
+    mode = p.add_argument_group("collection mode")
+    mode.add_argument(
+        "--collect",
+        choices=["perf", "shapes", "all"],
+        required=True,
+        help=(
+            "Collection mode.\n"
+            "  perf   — trace sweep + parse + analyze\n"
+            "  shapes — shape-only pass (no CUDA graph) + merge into timing CSVs\n"
+            "  all    — perf, then auto-restart server, then shapes + merge\n"
+        ),
+    )
+
     conn = p.add_argument_group("connection")
     conn.add_argument("--host", default="0.0.0.0")
     conn.add_argument("--port", type=int, default=30001)
@@ -543,19 +584,14 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         help="Number of prefill + decode batches to capture (1 = one of each)",
     )
 
-    sweep = p.add_argument_group("sweep")
-    sweep.add_argument(
-        "--sweep",
-        action="store_true",
-        help="Iterate over a grid of (bs, ctx) configurations",
-    )
-    sweep.add_argument(
+    grid = p.add_argument_group("sweep grid")
+    grid.add_argument(
         "--bs-grid",
         type=str,
         default=",".join(str(x) for x in DEFAULT_BS_GRID),
         help="Comma-separated batch sizes for sweep",
     )
-    sweep.add_argument(
+    grid.add_argument(
         "--ctx-grid",
         type=str,
         default=",".join(str(x) for x in DEFAULT_CTX_GRID),
@@ -568,17 +604,6 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         default="/flowsim/stage_traces",
         help="Root directory for trace output",
     )
-    out.add_argument(
-        "--parse",
-        action="store_true",
-        help="Run run_parse.py on collected traces",
-    )
-    out.add_argument(
-        "--analyze",
-        action="store_true",
-        help="Parse traces and show kernel breakdown with min-comm correction",
-    )
-
     srv = p.add_argument_group("server launch (optional)")
     srv.add_argument(
         "--launch-server",
@@ -600,90 +625,179 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+# ---------------------------------------------------------------------------
+# Phase runners
+# ---------------------------------------------------------------------------
+def _start_server(
+    args, *, disable_cuda_graph: bool = False
+) -> subprocess.Popen:
+    """Launch server, wait for readiness, return Popen handle."""
+    if not args.server_opts:
+        print("[ERROR] --launch-server requires --server-opts")
+        raise SystemExit(1)
+    proc = launch_server(
+        args.server_opts,
+        args.log_dir,
+        disable_cuda_graph=disable_cuda_graph,
+    )
+    print(f"[server] Waiting for {args.host}:{args.port} …")
+    if not wait_for_port(args.host, args.port, timeout=600):
+        print("[ERROR] Server did not start within timeout")
+        kill_server(proc)
+        raise SystemExit(1)
+    print("[server] Ready.\n")
+    return proc
+
+
+def _run_perf(args, summary: list[dict]) -> int:
+    """Collect perf traces, parse, and analyze over the (bs, ctx) grid."""
+    bs_list = [int(x) for x in args.bs_grid.split(",")]
+    ctx_list = [int(x) for x in args.ctx_grid.split(",")]
+
+    total = len(bs_list) * len(ctx_list)
+    idx = 0
+
+    for bs in bs_list:
+        for ctx in ctx_list:
+            idx += 1
+            tag = f"bs{bs}_ctx{ctx}"
+            sub_dir = os.path.join(args.output_dir, tag)
+            print(
+                f"{'=' * 60}\n"
+                f"[{idx}/{total}] bs={bs}  ctx={ctx}\n"
+                f"{'=' * 60}"
+            )
+            traces = collect_one(
+                host=args.host,
+                port=args.port,
+                bs=bs,
+                ctx=ctx,
+                decode_tokens=args.decode_tokens,
+                output_dir=sub_dir,
+                warmup_n=args.warmup_n,
+                num_steps=args.num_steps,
+            )
+            summary.append(
+                {"bs": bs, "ctx": ctx, "traces": len(traces), "dir": sub_dir}
+            )
+
+            if traces:
+                parse_dir = os.path.join(sub_dir, "parsed")
+                parse_traces(sub_dir, parse_dir)
+
+            if traces:
+                for stage in ("EXTEND", "DECODE"):
+                    result = analyze_traces(sub_dir, parse_dir, stage=stage)
+                    if result:
+                        print_analysis(result)
+                        analysis_path = os.path.join(
+                            sub_dir, f"analysis_{stage.lower()}.json"
+                        )
+                        with open(analysis_path, "w") as af:
+                            json.dump(result, af, indent=2)
+                        summary[-1][f"{stage.lower()}_total_ms"] = round(
+                            result["total_kernel_us"] / 1000, 2
+                        )
+    return 0
+
+
+def _run_shapes(args) -> int:
+    """Collect shapes (no-CUDA-graph pass) and merge into timing CSVs."""
+    sweep_dir = args.output_dir
+    print(f"\n{'=' * 60}")
+    print(f"  SHAPE COLLECTION  (sweep_dir={sweep_dir})")
+    print(f"{'=' * 60}\n")
+
+    collect_shapes(
+        args.host,
+        args.port,
+        sweep_dir,
+        decode_tokens=args.decode_tokens,
+        warmup_n=max(
+            2, args.warmup_n // 2
+        ),  # less warmup needed without CUDA graph
+        num_steps=args.num_steps,
+    )
+    merge_shapes(sweep_dir)
+    return 0
+
+
+def _write_summary(args, summary: list[dict]) -> None:
+    """Write sweep summary JSON and print a table."""
+    if not summary:
+        return
+    os.makedirs(args.output_dir, exist_ok=True)
+    summary_path = os.path.join(args.output_dir, "sweep_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\n[summary] {summary_path}")
+    for s in summary:
+        status = "✓" if s["traces"] > 0 else "✗"
+        print(
+            f"  {status} bs={s['bs']:>4}  ctx={s['ctx']:>6}  traces={s['traces']}"
+        )
+
+
 def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
     server_proc = None
+    summary: list[dict] = []
 
     try:
-        # Optionally launch server
-        if args.launch_server:
-            if not args.server_opts:
-                print("[ERROR] --launch-server requires --server-opts")
-                return 1
-            server_proc = launch_server(args.server_opts, args.log_dir)
-            print(f"[server] Waiting for {args.host}:{args.port} …")
-            if not wait_for_port(args.host, args.port, timeout=600):
-                print("[ERROR] Server did not start within timeout")
-                return 1
-            print("[server] Ready.\n")
-
-        # Build workload grid
-        if args.sweep:
-            bs_list = [int(x) for x in args.bs_grid.split(",")]
-            ctx_list = [int(x) for x in args.ctx_grid.split(",")]
-        else:
-            bs_list = [args.bs]
-            ctx_list = [args.ctx]
-
-        total = len(bs_list) * len(ctx_list)
-        idx = 0
-        summary: list[dict] = []
-
-        for bs in bs_list:
-            for ctx in ctx_list:
-                idx += 1
-                tag = f"bs{bs}_ctx{ctx}"
-                sub_dir = os.path.join(args.output_dir, tag)
+        # ==================================================================
+        # --collect all: perf → restart server → shapes → merge
+        # ==================================================================
+        if args.collect == "all":
+            if not args.launch_server:
                 print(
-                    f"{'=' * 60}\n"
-                    f"[{idx}/{total}] bs={bs}  ctx={ctx}\n"
-                    f"{'=' * 60}"
+                    "[ERROR] --collect all requires --launch-server "
+                    "(server must be restarted without CUDA graph for shape pass).\n"
+                    "Run separately:\n"
+                    "  --collect perf   (with normal server)\n"
+                    "  --collect shapes (with --disable-cuda-graph server)"
                 )
-                traces = collect_one(
-                    host=args.host,
-                    port=args.port,
-                    bs=bs,
-                    ctx=ctx,
-                    decode_tokens=args.decode_tokens,
-                    output_dir=sub_dir,
-                    warmup_n=args.warmup_n,
-                    num_steps=args.num_steps,
-                )
-                summary.append(
-                    {"bs": bs, "ctx": ctx, "traces": len(traces), "dir": sub_dir}
-                )
+                return 1
 
-                # Optionally parse and/or analyze
-                if (args.parse or args.analyze) and traces:
-                    parse_dir = os.path.join(sub_dir, "parsed")
-                    parse_traces(sub_dir, parse_dir)
+            # Phase 1: perf
+            print("\n" + "=" * 60)
+            print("  PHASE 1 / 2 : PERF COLLECTION")
+            print("=" * 60 + "\n")
+            server_proc = _start_server(args, disable_cuda_graph=False)
+            _run_perf(args, summary)
+            _write_summary(args, summary)
+            print("\n[server] Shutting down for shape pass …")
+            kill_server(server_proc)
+            server_proc = None
+            time.sleep(5)
 
-                if args.analyze and traces:
-                    for stage in ("EXTEND", "DECODE"):
-                        result = analyze_traces(sub_dir, parse_dir, stage=stage)
-                        if result:
-                            print_analysis(result)
-                            # Save per-config analysis
-                            analysis_path = os.path.join(
-                                sub_dir, f"analysis_{stage.lower()}.json"
-                            )
-                            with open(analysis_path, "w") as af:
-                                json.dump(result, af, indent=2)
-                            summary[-1][f"{stage.lower()}_total_ms"] = round(
-                                result["total_kernel_us"] / 1000, 2
-                            )
+            # Phase 2: shapes
+            print("\n" + "=" * 60)
+            print("  PHASE 2 / 2 : SHAPE COLLECTION")
+            print("=" * 60 + "\n")
+            server_proc = _start_server(args, disable_cuda_graph=True)
+            _run_shapes(args)
+            return 0
 
-        # Write summary
-        summary_path = os.path.join(args.output_dir, "sweep_summary.json")
-        os.makedirs(args.output_dir, exist_ok=True)
-        with open(summary_path, "w") as f:
-            json.dump(summary, f, indent=2)
-        print(f"\n[summary] {summary_path}")
-        for s in summary:
-            status = "✓" if s["traces"] > 0 else "✗"
-            print(f"  {status} bs={s['bs']:>4}  ctx={s['ctx']:>6}  traces={s['traces']}")
+        # ==================================================================
+        # --collect perf
+        # ==================================================================
+        if args.collect == "perf":
+            if args.launch_server:
+                server_proc = _start_server(args, disable_cuda_graph=False)
+            _run_perf(args, summary)
+            _write_summary(args, summary)
+            return 0
 
-        return 0
+        # ==================================================================
+        # --collect shapes
+        # ==================================================================
+        if args.collect == "shapes":
+            if args.launch_server:
+                server_proc = _start_server(args, disable_cuda_graph=True)
+            _run_shapes(args)
+            return 0
+
+        return 0  # unreachable (argparse enforces --collect)
 
     finally:
         if server_proc is not None:

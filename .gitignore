@@ -1,5 +1,6 @@
 *.csv
 *.pyc
+__pycache__/
 *.egg-info
 tests/test-artifacts/
 unknown_kernels.json
