@@ -3,7 +3,8 @@
 # │  Run profiling across 4 parallelism configs for Qwen3-235B-A22B-FP8│
 # │                                                                     │
 # │  Supports all --collect modes plus offline re-analysis:             │
-# │    perf      — collect traces + parse + analyze                     │
+# │    perf      — collect decode traces + parse + analyze              │
+# │    prefill   — collect prefill traces (input_len, existing_ctx)     │
 # │    shapes    — collect kernel shapes (no CUDA graph)                │
 # │    all       — perf → restart server → shapes                      │
 # │    reanalyze — re-run cross_rank_agg on existing parsed CSVs       │
@@ -11,7 +12,8 @@
 # └─────────────────────────────────────────────────────────────────────┘
 #
 # Usage:
-#   bash run_configs.sh perf           # collect perf traces
+#   bash run_configs.sh perf           # collect decode traces
+#   bash run_configs.sh prefill        # collect prefill traces
 #   bash run_configs.sh shapes         # collect kernel shapes
 #   bash run_configs.sh all            # perf → restart server → shapes
 #   bash run_configs.sh reanalyze      # re-run analysis offline
@@ -29,9 +31,9 @@ set -euo pipefail
 # ── Resolve mode ──────────────────────────────────────────
 MODE="${1:-perf}"
 case "$MODE" in
-    perf|shapes|all|reanalyze) ;;
+    perf|prefill|shapes|all|reanalyze) ;;
     *)
-        echo "Usage: $0 {perf|shapes|all|reanalyze} [RUN_CONFIGS=P1,P2,...]"
+        echo "Usage: $0 {perf|prefill|shapes|all|reanalyze} [RUN_CONFIGS=P1,P2,...]"
         exit 1
         ;;
 esac
@@ -45,6 +47,8 @@ export PYTHONPATH="/workspace/utils${PYTHONPATH:+:$PYTHONPATH}"
 
 BS_GRID="1,4,16,64,128,256"
 CTX_GRID="2048,4096,8192,16384,32768"
+INPUT_LEN_GRID="256,512,1024,2048,4096"
+EXISTING_CTX_GRID="0,4096,8192,16384"
 
 RUN_CONFIGS="${RUN_CONFIGS:-P1,P2,P3,P4}"
 
@@ -133,6 +137,7 @@ run_config() {
         --launch-server \
         --server-opts "--model-path $MODEL --host $HOST --port $PORT $opts" \
         --bs-grid "$BS_GRID" --ctx-grid "$CTX_GRID" \
+        --input-len-grid "$INPUT_LEN_GRID" --existing-ctx-grid "$EXISTING_CTX_GRID" \
         --output-dir "/workspace/$dir_name" \
         --log-dir "/workspace/sweep_server_logs/${tag}_${MODE}"
 

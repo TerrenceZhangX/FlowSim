@@ -91,6 +91,8 @@ from shape_merge import merge_shapes_dir
 # ---------------------------------------------------------------------------
 DEFAULT_BS_GRID = [1, 4, 16, 64, 256]
 DEFAULT_CTX_GRID = [512, 2048, 8192, 32768]
+DEFAULT_INPUT_LEN_GRID = [256, 512, 1024, 2048, 4096]
+DEFAULT_EXISTING_CTX_GRID = [0, 4096, 8192, 16384]
 DEFAULT_WARMUP_N = 5
 DEFAULT_DECODE_TOKENS = 32
 DEFAULT_NUM_STEPS = 1
@@ -130,6 +132,59 @@ def _post(url: str, payload: dict, timeout: int = 300) -> dict | str:
 # ---------------------------------------------------------------------------
 # Core functions
 # ---------------------------------------------------------------------------
+def flush_cache(host: str, port: int) -> bool:
+    """Flush the server's radix cache and KV cache via ``/flush_cache``.
+
+    Must be called when no requests are in flight.  Returns True on success.
+    """
+    url = f"http://{host}:{port}/flush_cache"
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode()
+            ok = resp.status == 200
+            if ok:
+                print("[flush] Cache flushed ✓")
+            else:
+                print(f"[flush] Flush returned {resp.status}: {body}")
+            return ok
+    except Exception as exc:
+        print(f"[flush] FAILED: {exc}")
+        return False
+
+
+def seed_prefix(
+    host: str, port: int, prefix_tokens: int, *, unique_id: str = "A"
+) -> None:
+    """Send a request to populate the radix cache with *prefix_tokens* tokens.
+
+    The prompt is deterministic for a given *unique_id* so that a later request
+    sharing the same prefix will hit the cache.  The request generates only 1
+    token to minimize overhead.
+    """
+    url = f"http://{host}:{port}/generate"
+    # Build a prompt of approximately prefix_tokens length.
+    # Use a repeating pattern that's unique per unique_id to avoid
+    # accidental collisions with warmup prompts.
+    word = f"Prefix{unique_id} "
+    prompt = word * max(1, prefix_tokens // 2)
+    payload = {
+        "text": prompt,
+        "sampling_params": {"max_new_tokens": 1, "temperature": 0},
+    }
+    print(
+        f"[seed] Seeding prefix cache with ~{prefix_tokens} tokens "
+        f"(id={unique_id}) …"
+    )
+    try:
+        _post(url, payload, timeout=300)
+        print("[seed] Prefix cached ✓")
+    except Exception as exc:
+        print(f"[seed] FAILED: {exc}")
+
+
 def warmup(host: str, port: int, n: int, bs: int, ctx: int) -> None:
     """Send *n* short requests to trigger CUDA graph capture before profiling."""
     url = f"http://{host}:{port}/generate"
@@ -296,6 +351,126 @@ def collect_one(
         for t in req_threads:
             t.join(timeout=300)
         print("[cleanup] done")
+
+    return traces
+
+
+def collect_one_prefill(
+    host: str,
+    port: int,
+    input_len: int,
+    existing_ctx: int,
+    output_dir: str,
+    warmup_n: int,
+    num_steps: int,
+) -> list[str]:
+    """Collect one EXTEND trace for a prefill sweep point.
+
+    Implements the multi-turn prefill profiling protocol:
+
+    1. ``/flush_cache`` — clear radix + KV cache.
+    2. (if existing_ctx > 0) Send a *seed* request whose prompt has
+       ``existing_ctx`` tokens.  This populates the radix cache.
+    3. ``/start_profile`` — arm the profiler.
+    4. Send a *profiling* request whose prompt has
+       ``existing_ctx + input_len`` tokens.  The first ``existing_ctx``
+       tokens are **identical** to the seed prompt (radix cache hit),
+       so the EXTEND phase processes only the trailing ``input_len``
+       new tokens — exactly what we want to measure.
+    5. Wait for traces.
+
+    For ``existing_ctx == 0`` (cold prefill / turn-1), step 2 is skipped
+    and the profiling request is a fresh prompt of length ``input_len``.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    total_prompt = existing_ctx + input_len
+
+    # Build token-exact prompts using raw token IDs.
+    # SGLang's /generate accepts ``input_ids`` (list of ints) directly,
+    # guaranteeing the exact token count with zero tokenizer error.
+    # We use two non-overlapping ID ranges so the extension part is a
+    # guaranteed radix-cache miss while the prefix part is a hit.
+    PREFIX_TOKEN = 1000  # arbitrary valid token for the cached prefix
+    EXTEND_TOKEN = 2000  # different token for the new (profiled) part
+
+    seed_ids: list[int] = (
+        [PREFIX_TOKEN] * existing_ctx if existing_ctx > 0 else []
+    )
+    profile_ids: list[int] = [PREFIX_TOKEN] * existing_ctx + [
+        EXTEND_TOKEN
+    ] * input_len
+
+    url = f"http://{host}:{port}/generate"
+
+    # ── Step 0: warmup (CUDA graph capture) ──
+    warmup(host, port, n=warmup_n, bs=1, ctx=max(total_prompt, 2048))
+
+    # ── Step 1: flush cache ──
+    flush_cache(host, port)
+    time.sleep(1)
+
+    # ── Step 2: seed prefix (if existing_ctx > 0) ──
+    if existing_ctx > 0:
+        print(f"[prefill] Seeding existing_ctx={existing_ctx} tokens …")
+        payload_seed = {
+            "input_ids": seed_ids,
+            "sampling_params": {"max_new_tokens": 1, "temperature": 0},
+        }
+        try:
+            _post(url, payload_seed, timeout=300)
+            print("[prefill] Seed request done ✓")
+        except Exception as exc:
+            print(f"[prefill] Seed FAILED: {exc}")
+            return []
+        time.sleep(0.5)
+
+    # ── Step 3: start profiler ──
+    if not start_stage_profile(host, port, output_dir, num_steps):
+        print("[ERROR] Could not start profiler — skipping")
+        return []
+
+    # ── Step 4: send profiling request ──
+    if existing_ctx > 0:
+        print(
+            f"[prefill] Sending profile request: "
+            f"prefix={existing_ctx} (cached) + new={input_len} tokens"
+        )
+    else:
+        print(
+            f"[prefill] Sending cold prefill request: "
+            f"input_len={input_len} tokens (no existing KV)"
+        )
+    payload_profile = {
+        "input_ids": profile_ids,
+        "sampling_params": {
+            "max_new_tokens": DEFAULT_DECODE_TOKENS,
+            "temperature": 0,
+        },
+    }
+    try:
+        _post(url, payload_profile, timeout=600)
+        print("[prefill] Profile request done ✓")
+    except Exception as exc:
+        print(f"[prefill] Profile request FAILED: {exc}")
+
+    # ── Step 5: wait for traces ──
+    print("[wait] Waiting for profiler to auto-stop …")
+    traces = wait_for_traces(output_dir, timeout=120)
+    prev_count = len(traces)
+    for _ in range(6):
+        time.sleep(2)
+        new_traces = sorted(
+            glob.glob(os.path.join(output_dir, "*.trace.json.gz"))
+        )
+        if len(new_traces) == prev_count:
+            break
+        traces = new_traces
+        prev_count = len(traces)
+    print(f"[done] {len(traces)} trace files in {output_dir}")
+    for t in traces:
+        sz = os.path.getsize(t) / 1024
+        print(f"       {os.path.basename(t)}  ({sz:.1f} KB)")
+    print()
 
     return traces
 
@@ -548,13 +723,14 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     mode = p.add_argument_group("collection mode")
     mode.add_argument(
         "--collect",
-        choices=["perf", "shapes", "all"],
+        choices=["perf", "shapes", "all", "prefill"],
         required=True,
         help=(
             "Collection mode.\n"
-            "  perf   — trace sweep + parse + analyze\n"
-            "  shapes — shape-only pass (no CUDA graph) + merge into timing CSVs\n"
-            "  all    — perf, then auto-restart server, then shapes + merge\n"
+            "  perf    — decode trace sweep (bs, ctx) + parse + analyze\n"
+            "  prefill — prefill trace sweep (input_len, existing_ctx) + parse + analyze\n"
+            "  shapes  — shape-only pass (no CUDA graph) + merge into timing CSVs\n"
+            "  all     — perf, then auto-restart server, then shapes + merge\n"
         ),
     )
 
@@ -595,7 +771,19 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         "--ctx-grid",
         type=str,
         default=",".join(str(x) for x in DEFAULT_CTX_GRID),
-        help="Comma-separated context lengths for sweep",
+        help="Comma-separated context lengths for decode sweep",
+    )
+    grid.add_argument(
+        "--input-len-grid",
+        type=str,
+        default=",".join(str(x) for x in DEFAULT_INPUT_LEN_GRID),
+        help="Comma-separated input lengths for prefill sweep",
+    )
+    grid.add_argument(
+        "--existing-ctx-grid",
+        type=str,
+        default=",".join(str(x) for x in DEFAULT_EXISTING_CTX_GRID),
+        help="Comma-separated existing context lengths for prefill sweep",
     )
 
     out = p.add_argument_group("output")
@@ -722,6 +910,62 @@ def _run_shapes(args) -> int:
     return 0
 
 
+def _run_prefill(args, summary: list[dict]) -> int:
+    """Collect prefill traces over the (input_len, existing_ctx) grid."""
+    input_len_list = [int(x) for x in args.input_len_grid.split(",")]
+    ctx_list = [int(x) for x in args.existing_ctx_grid.split(",")]
+
+    total = len(input_len_list) * len(ctx_list)
+    idx = 0
+
+    for input_len in input_len_list:
+        for existing_ctx in ctx_list:
+            idx += 1
+            tag = f"input{input_len}_ctx{existing_ctx}"
+            sub_dir = os.path.join(args.output_dir, tag)
+            print(
+                f"{'=' * 60}\n"
+                f"[{idx}/{total}] input_len={input_len}  existing_ctx={existing_ctx}\n"
+                f"{'=' * 60}"
+            )
+            traces = collect_one_prefill(
+                host=args.host,
+                port=args.port,
+                input_len=input_len,
+                existing_ctx=existing_ctx,
+                output_dir=sub_dir,
+                warmup_n=args.warmup_n,
+                num_steps=args.num_steps,
+            )
+            summary.append(
+                {
+                    "input_len": input_len,
+                    "existing_ctx": existing_ctx,
+                    "traces": len(traces),
+                    "dir": sub_dir,
+                }
+            )
+
+            if traces:
+                parse_dir = os.path.join(sub_dir, "parsed")
+                parse_traces(sub_dir, parse_dir)
+
+            if traces:
+                for stage in ("EXTEND", "DECODE"):
+                    result = analyze_traces(sub_dir, parse_dir, stage=stage)
+                    if result:
+                        print_analysis(result)
+                        analysis_path = os.path.join(
+                            sub_dir, f"analysis_{stage.lower()}.json"
+                        )
+                        with open(analysis_path, "w") as af:
+                            json.dump(result, af, indent=2)
+                        summary[-1][f"{stage.lower()}_total_ms"] = round(
+                            result["total_kernel_us"] / 1000, 2
+                        )
+    return 0
+
+
 def _write_summary(args, summary: list[dict]) -> None:
     """Write sweep summary JSON and print a table."""
     if not summary:
@@ -733,9 +977,17 @@ def _write_summary(args, summary: list[dict]) -> None:
     print(f"\n[summary] {summary_path}")
     for s in summary:
         status = "✓" if s["traces"] > 0 else "✗"
-        print(
-            f"  {status} bs={s['bs']:>4}  ctx={s['ctx']:>6}  traces={s['traces']}"
-        )
+        if "bs" in s:
+            print(
+                f"  {status} bs={s['bs']:>4}  ctx={s['ctx']:>6}  "
+                f"traces={s['traces']}"
+            )
+        else:
+            print(
+                f"  {status} input_len={s['input_len']:>5}  "
+                f"existing_ctx={s['existing_ctx']:>6}  "
+                f"traces={s['traces']}"
+            )
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -785,6 +1037,16 @@ def main(argv: Optional[list] = None) -> int:
             if args.launch_server:
                 server_proc = _start_server(args, disable_cuda_graph=False)
             _run_perf(args, summary)
+            _write_summary(args, summary)
+            return 0
+
+        # ==================================================================
+        # --collect prefill
+        # ==================================================================
+        if args.collect == "prefill":
+            if args.launch_server:
+                server_proc = _start_server(args, disable_cuda_graph=False)
+            _run_prefill(args, summary)
             _write_summary(args, summary)
             return 0
 
