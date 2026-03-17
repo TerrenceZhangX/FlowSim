@@ -64,7 +64,7 @@ include = [
 ]
 
 [project.scripts]
-flowsim-submit = "scripts.submit_profile:main"
+flowsim = "scripts.cli:main"
 
 [tool.black]
 line-length = 80
