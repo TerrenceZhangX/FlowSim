@@ -205,6 +205,16 @@ def merge_shapes(
             merged_rows.append(row)
             stats["no_match"] += 1
 
+    # Verify shape CSV has no extra unmatched occurrences for shared kernels
+    for kname, shape_entries in shape_lookup.items():
+        timing_count = name_counter.get(kname, 0)
+        if timing_count > 0 and timing_count < len(shape_entries):
+            raise ValueError(
+                f"Kernel {kname!r} has {len(shape_entries)} entries in "
+                f"shape CSV but only {timing_count} in timing CSV. "
+                f"Timing and shape passes captured different batch counts."
+            )
+
     # Write output
     os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
 
@@ -221,7 +231,7 @@ def merge_shapes(
         else list(merged_rows[0].keys())
     )
     with open(output_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(merged_rows)
 

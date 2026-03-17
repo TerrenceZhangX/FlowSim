@@ -350,6 +350,7 @@ def collect_one_prefill(
             oom_detected = True
         else:
             print(f"[prefill] Profile request FAILED: {exc}")
+            return [], False
 
     if oom_detected:
         time.sleep(3)
