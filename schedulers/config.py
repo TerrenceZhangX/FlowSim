@@ -48,6 +48,20 @@ except ImportError:
 _CONFIG_DIR = Path.home() / ".flowsim"
 
 
+def _save_yaml(path: Path, data: dict) -> None:
+    """Write a dict to a YAML file (uses PyYAML if available, else JSON)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import yaml as _y
+        with open(path, "w") as f:
+            _y.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    except ImportError:
+        import json as _j
+        with open(path, "w") as f:
+            _j.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+
+
 def _resolve_path(env_var: str, filename: str) -> Path | None:
     """Return the config file path, or None if it doesn't exist."""
     env = os.environ.get(env_var)

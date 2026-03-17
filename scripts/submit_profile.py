@@ -223,7 +223,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Only print the rendered manifest; do not submit",
+        help="[debug] Print rendered manifest without submitting",
     )
 
     return p.parse_args(argv)
