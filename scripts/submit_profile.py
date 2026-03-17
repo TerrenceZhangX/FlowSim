@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Submit FlowSim profiling jobs to Kubernetes or Slurm.
+"""Submit FlowSim profiling jobs locally, to Kubernetes, or to Slurm.
 
 Usage examples
 --------------
+
+Run locally (no cluster needed):
+
+    flowsim submit \\
+        --scheduler local \\
+        --collect perf \\
+        --model-path Qwen/Qwen3-8B \\
+        --tp 1 --local-gpus 0
 
 Dry-run (print Kubernetes Job YAML to stdout):
 
@@ -45,6 +53,7 @@ import sys
 from schedulers.base import ProfileJobSpec
 from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_jwt_token
 from schedulers.k8s import K8sScheduler
+from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
 
 
@@ -67,7 +76,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # -- Scheduler choice --
     p.add_argument(
         "--scheduler",
-        choices=["k8s", "slurm"],
+        choices=["local", "k8s", "slurm"],
         required=True,
         help="Scheduler backend.",
     )
@@ -110,6 +119,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--log-dir", default="/flowsim/tests/test-artifacts",
     )
     infra.add_argument("--job-name", default="")
+
+    # -- Local options --
+    loc = p.add_argument_group("local options")
+    loc.add_argument(
+        "--local-gpus",
+        default="",
+        help="CUDA_VISIBLE_DEVICES for local execution (e.g. '0' or '0,1')",
+    )
+    loc.add_argument(
+        "--local-workdir",
+        default="",
+        help="Working directory for local execution (default: FlowSim project root)",
+    )
 
     # -- Kubernetes-specific --
     k8s = p.add_argument_group("kubernetes options (config: ~/.flowsim/k8s.yaml)")
@@ -289,7 +311,12 @@ def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:
 
 
 def _build_scheduler(args: argparse.Namespace):
-    if args.scheduler == "k8s":
+    if args.scheduler == "local":
+        return LocalScheduler(
+            gpus=args.local_gpus,
+            workdir=args.local_workdir,
+        )
+    elif args.scheduler == "k8s":
         node_sel = {}
         for item in args.k8s_node_selector:
             k, _, v = item.partition("=")
@@ -334,7 +361,7 @@ def main(argv: list[str] | None = None) -> None:
             args.slurm_jwt_token = token
 
     # Validate required connection params before submit
-    if not args.dry_run:
+    if not args.dry_run and args.scheduler not in ("local",):
         _validate_connection(args)
 
     spec = _build_spec(args)
