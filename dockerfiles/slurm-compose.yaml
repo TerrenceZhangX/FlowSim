@@ -1,0 +1,152 @@
+# Slurm test cluster — slurmctld + 2 compute nodes (GPU 0, GPU 1) + slurmrestd
+#
+# Usage:
+#   cd dockerfiles/
+#   docker compose -f slurm-compose.yaml up -d
+#
+#   # Wait for cluster to be ready (~30s)
+#   docker exec slurmctld sinfo
+#
+#   # Get JWT token for REST API
+#   docker exec slurmctld scontrol token lifespan=3600
+#
+#   # Init FlowSim
+#   flowsim init slurm --rest-url http://localhost:6820 \
+#       --partition normal --account default \
+#       --jwt-token-cmd "docker exec slurmctld scontrol token lifespan=3600" \
+#       --force
+#
+#   # Submit a job
+#   flowsim submit --scheduler slurm --collect perf \
+#       --model-path /models/Qwen-7B --gpus 1
+#
+#   # Teardown
+#   docker compose -f slurm-compose.yaml down -v
+
+x-slurm-base: &slurm-base
+  build:
+    context: .
+    dockerfile: slurm-node.dockerfile
+  volumes:
+    - slurm-etc:/etc/slurm
+    - munge-socket:/run/munge
+    # Share workspace for model weights / traces
+    - /home/administrator/zhangt:/workspace:ro
+  networks:
+    - slurm-net
+
+services:
+  # ---- Munge (shared auth daemon) ----
+  munge:
+    <<: *slurm-base
+    container_name: munge
+    hostname: munge
+    command: >
+      bash -c "
+        if [ ! -f /etc/munge/munge.key ]; then
+          mungekey --create --force
+        fi
+        chown munge:munge /etc/munge/munge.key
+        chmod 400 /etc/munge/munge.key
+        gosu munge munged --foreground
+      "
+    volumes:
+      - munge-key:/etc/munge
+      - munge-socket:/run/munge
+
+  # ---- Controller ----
+  slurmctld:
+    <<: *slurm-base
+    container_name: slurmctld
+    hostname: slurmctld
+    command: >
+      bash -c "
+        until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+        slurmctld -D -vvv
+      "
+    depends_on:
+      - munge
+    volumes:
+      - slurm-etc:/etc/slurm
+      - munge-key:/etc/munge:ro
+      - munge-socket:/run/munge
+      - slurm-state:/var/spool/slurmctld
+
+  # ---- Compute node 0 (GPU 0) ----
+  slurmd-0:
+    <<: *slurm-base
+    container_name: slurmd-0
+    hostname: slurmd-0
+    command: >
+      bash -c "
+        until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+        slurmd -D -vvv
+      "
+    depends_on:
+      - slurmctld
+    volumes:
+      - slurm-etc:/etc/slurm:ro
+      - munge-key:/etc/munge:ro
+      - munge-socket:/run/munge
+      - /home/administrator/zhangt:/workspace:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+  # ---- Compute node 1 (GPU 1) ----
+  slurmd-1:
+    <<: *slurm-base
+    container_name: slurmd-1
+    hostname: slurmd-1
+    command: >
+      bash -c "
+        until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+        slurmd -D -vvv
+      "
+    depends_on:
+      - slurmctld
+    volumes:
+      - slurm-etc:/etc/slurm:ro
+      - munge-key:/etc/munge:ro
+      - munge-socket:/run/munge
+      - /home/administrator/zhangt:/workspace:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+  # ---- REST API ----
+  slurmrestd:
+    <<: *slurm-base
+    container_name: slurmrestd
+    hostname: slurmrestd
+    command: >
+      bash -c "
+        until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+        slurmrestd -a rest_auth/jwt 0.0.0.0:6820 -vvv
+      "
+    depends_on:
+      - slurmctld
+    ports:
+      - "6820:6820"
+    volumes:
+      - slurm-etc:/etc/slurm:ro
+      - munge-key:/etc/munge:ro
+      - munge-socket:/run/munge
+
+volumes:
+  slurm-etc:
+  slurm-state:
+  munge-key:
+  munge-socket:
+
+networks:
+  slurm-net:
+    driver: bridge

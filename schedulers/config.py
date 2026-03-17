@@ -102,14 +102,17 @@ def resolve_jwt_token(slurm_cfg: dict) -> str:
 
     cmd = slurm_cfg.get("jwt_token_cmd", "")
     if cmd:
-        result = subprocess.run(
-            shlex.split(cmd),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        try:
+            result = subprocess.run(
+                shlex.split(cmd),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except (FileNotFoundError, OSError):
+            pass
 
     return ""
 

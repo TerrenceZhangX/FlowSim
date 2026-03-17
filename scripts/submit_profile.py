@@ -226,6 +226,37 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="[debug] Print rendered manifest without submitting",
     )
 
+    # -- PD disaggregation --
+    pd = p.add_argument_group("PD disaggregation")
+    pd.add_argument(
+        "--pd",
+        action="store_true",
+        help="Submit a prefill + decode job pair (PD disaggregation)",
+    )
+    pd.add_argument(
+        "--disagg-transfer-backend",
+        default="mooncake",
+        choices=["mooncake", "nixl"],
+        help="KV transfer backend (default: mooncake)",
+    )
+    pd.add_argument(
+        "--disagg-bootstrap-port",
+        type=int,
+        default=8998,
+        help="Bootstrap port for PD coordination (default: 8998)",
+    )
+    pd.add_argument(
+        "--disagg-prefill-pp",
+        type=int,
+        default=1,
+        help="Pipeline parallelism for prefill instance (default: 1)",
+    )
+    pd.add_argument(
+        "--disagg-ib-device",
+        default="",
+        help="InfiniBand device for RDMA transfer",
+    )
+
     return p.parse_args(argv)
 
 
@@ -250,6 +281,10 @@ def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:
         log_dir=args.log_dir,
         job_name=args.job_name,
         extra_server_opts=args.extra_server_opts,
+        disagg_transfer_backend=args.disagg_transfer_backend,
+        disagg_bootstrap_port=args.disagg_bootstrap_port,
+        disagg_prefill_pp=args.disagg_prefill_pp,
+        disagg_ib_device=args.disagg_ib_device,
     )
 
 
@@ -305,10 +340,18 @@ def main(argv: list[str] | None = None) -> None:
     spec = _build_spec(args)
     scheduler = _build_scheduler(args)
 
+    is_pd = args.pd
+
     if args.dry_run:
-        print(scheduler.dry_run(spec))
+        if is_pd:
+            print(scheduler.render_pd_pair(spec))
+        else:
+            print(scheduler.dry_run(spec))
     else:
-        result = scheduler.submit(spec)
+        if is_pd:
+            result = scheduler.submit_pd_pair(spec)
+        else:
+            result = scheduler.submit(spec)
         print(result)
 
 
