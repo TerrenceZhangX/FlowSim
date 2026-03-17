@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from schedulers.base import BaseScheduler, ProfileJobSpec
+from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
 
 # Optional: nicer YAML output for dry-run.
 try:
@@ -137,7 +137,7 @@ class K8sScheduler(BaseScheduler):
             },
         }
 
-    def submit(self, spec: ProfileJobSpec) -> str:
+    def submit(self, spec: ProfileJobSpec) -> JobResult:
         """Submit via the ``kubernetes`` Python client (``pip install kubernetes``)."""
         try:
             from kubernetes import client as k8s_client, config as k8s_config
@@ -175,7 +175,13 @@ class K8sScheduler(BaseScheduler):
             namespace=self.namespace,
             body=body,
         )
-        return f"job.batch/{resp.metadata.name} created (namespace={resp.metadata.namespace})"
+        return JobResult(
+            job_id=resp.metadata.name,
+            scheduler="k8s",
+            state="Submitted",
+            output_dir=spec.output_dir,
+            message=f"job.batch/{resp.metadata.name} created (namespace={resp.metadata.namespace})",
+        )
 
     # -----------------------------------------------------------------
     # Helpers shared by status / logs
@@ -196,6 +202,18 @@ class K8sScheduler(BaseScheduler):
             k8s_config.load_incluster_config()
 
         return k8s_client.BatchV1Api(), k8s_client.CoreV1Api()
+
+    def cancel(self, job_id: str) -> str:
+        """Delete a K8s Job (and its pods) by name."""
+        from kubernetes import client as k8s_client
+
+        batch_api, _ = self._load_k8s()
+        batch_api.delete_namespaced_job(
+            name=job_id,
+            namespace=self.namespace,
+            body=k8s_client.V1DeleteOptions(propagation_policy="Foreground"),
+        )
+        return f"job.batch/{job_id} deleted (namespace={self.namespace})"
 
     def status(self, job_id: str) -> dict:
         """Query K8s Job status by job name."""
@@ -249,7 +267,7 @@ class K8sScheduler(BaseScheduler):
             "output_hint": output_hint,
         }
 
-    def logs(self, job_id: str, *, tail: int = 100) -> str:
+    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """Show where logs are and how to access them for a K8s Job."""
         try:
             from kubernetes import client as k8s_client
@@ -264,6 +282,19 @@ class K8sScheduler(BaseScheduler):
         )
         if not pods.items:
             return f"No pods found for job {job_id} in namespace {self.namespace}"
+
+        if follow:
+            # Stream logs from the first running/succeeded pod
+            for pod in pods.items:
+                name = pod.metadata.name
+                if pod.status.phase in ("Running", "Succeeded"):
+                    # Use kubectl follow since the Python client follow is blocking
+                    return (
+                        f"Follow logs:\n"
+                        f"  kubectl logs -f {name} -n {self.namespace}"
+                    )
+            name = pods.items[0].metadata.name
+            return f"Follow logs:\n  kubectl logs -f {name} -n {self.namespace}"
 
         parts: list[str] = []
 
@@ -307,3 +338,39 @@ class K8sScheduler(BaseScheduler):
                     break
 
         return "\n".join(parts)
+
+    def list_jobs(self, *, status_filter: str = "") -> list[dict]:
+        """List FlowSim Jobs in the namespace (label: app=flowsim)."""
+        batch_api, _ = self._load_k8s()
+
+        jobs = batch_api.list_namespaced_job(
+            namespace=self.namespace,
+            label_selector="app=flowsim",
+        )
+        result: list[dict] = []
+        for job in jobs.items:
+            st = job.status
+            if st.succeeded and st.succeeded > 0:
+                state = "Succeeded"
+            elif st.failed and st.failed > 0:
+                state = "Failed"
+            elif st.active and st.active > 0:
+                state = "Running"
+            else:
+                state = "Pending"
+
+            if status_filter and state.lower() != status_filter.lower():
+                continue
+
+            created = ""
+            if job.metadata.creation_timestamp:
+                created = job.metadata.creation_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+            result.append({
+                "job_id": job.metadata.name,
+                "name": job.metadata.name,
+                "state": state,
+                "namespace": self.namespace,
+                "created": created,
+            })
+        return result

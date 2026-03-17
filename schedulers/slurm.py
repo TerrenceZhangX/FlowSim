@@ -12,7 +12,7 @@ import ssl
 import urllib.error
 import urllib.request
 
-from schedulers.base import BaseScheduler, ProfileJobSpec
+from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
 
 
 _DEFAULT_API_VERSION = "v0.0.40"
@@ -150,7 +150,7 @@ class SlurmScheduler(BaseScheduler):
         lines.append("")
         return "\n".join(lines)
 
-    def submit(self, spec: ProfileJobSpec) -> str:
+    def submit(self, spec: ProfileJobSpec) -> JobResult:
         """Submit the job via slurmrestd REST API.
 
         Requires ``rest_url`` and ``jwt_token`` to be set.
@@ -222,11 +222,17 @@ class SlurmScheduler(BaseScheduler):
             msgs = "; ".join(e.get("error", str(e)) for e in errors)
             raise RuntimeError(f"slurmrestd job submit failed: {msgs}")
 
-        job_id = body.get("job_id", "unknown")
-        return f"Submitted batch job {job_id}"
+        job_id = str(body.get("job_id", "unknown"))
+        return JobResult(
+            job_id=job_id,
+            scheduler="slurm",
+            state="Submitted",
+            output_dir=spec.output_dir,
+            message=f"Submitted batch job {job_id}",
+        )
 
-    def _rest_get(self, path: str) -> dict:
-        """GET a slurmrestd endpoint and return parsed JSON."""
+    def _rest_request(self, path: str, *, method: str = "GET") -> dict:
+        """Send a request to slurmrestd and return parsed JSON."""
         if not self.rest_url:
             raise RuntimeError("--slurm-rest-url is required")
         if not self.jwt_token:
@@ -236,7 +242,7 @@ class SlurmScheduler(BaseScheduler):
         headers = {
             "X-SLURM-USER-TOKEN": self.jwt_token,
         }
-        req = urllib.request.Request(url, headers=headers, method="GET")
+        req = urllib.request.Request(url, headers=headers, method=method)
 
         ctx: ssl.SSLContext | None = None
         if not self.verify_ssl:
@@ -252,6 +258,22 @@ class SlurmScheduler(BaseScheduler):
             raise RuntimeError(f"slurmrestd returned HTTP {exc.code}:\n{detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Cannot reach slurmrestd at {self.rest_url}: {exc.reason}") from exc
+
+    def _rest_get(self, path: str) -> dict:
+        """GET a slurmrestd endpoint and return parsed JSON."""
+        return self._rest_request(path, method="GET")
+
+    def cancel(self, job_id: str) -> str:
+        """Cancel a Slurm job via slurmrestd DELETE."""
+        body = self._rest_request(
+            f"/slurm/{self.api_version}/job/{job_id}",
+            method="DELETE",
+        )
+        errors = body.get("errors") or []
+        if errors:
+            msgs = "; ".join(e.get("error", str(e)) for e in errors)
+            raise RuntimeError(f"slurmrestd cancel failed: {msgs}")
+        return f"Cancelled Slurm job {job_id}"
 
     def status(self, job_id: str) -> dict:
         """Query Slurm job status via slurmrestd."""
@@ -290,7 +312,7 @@ class SlurmScheduler(BaseScheduler):
             "output_hint": output_file,
         }
 
-    def logs(self, job_id: str, *, tail: int = 100) -> str:
+    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """Show where Slurm job logs are and how to access them."""
         info = self.status(job_id)
         output_file = info.get("output_hint", "")
@@ -302,9 +324,16 @@ class SlurmScheduler(BaseScheduler):
             parts.append(f"Log file (on cluster shared filesystem):")
             parts.append(f"  {output_file}")
             parts.append("")
-            parts.append("View on login node:")
-            parts.append(f"  less {output_file}")
-            parts.append(f"  tail -{tail} {output_file}")
+            if follow:
+                parts.append("Follow logs:")
+                parts.append(f"  tail -f {output_file}")
+            else:
+                parts.append("View on login node:")
+                parts.append(f"  less {output_file}")
+                parts.append(f"  tail -{tail} {output_file}")
+                parts.append("")
+                parts.append("Follow logs:")
+                parts.append(f"  tail -f {output_file}")
             parts.append("")
             parts.append("Copy to local machine:")
             parts.append(f"  scp <login-node>:{output_file} .")
@@ -318,6 +347,37 @@ class SlurmScheduler(BaseScheduler):
         parts.append("  ls ~/flowsim_traces/")
 
         return "\n".join(parts)
+
+    def list_jobs(self, *, status_filter: str = "") -> list[dict]:
+        """List Slurm jobs via slurmrestd /jobs endpoint."""
+        body = self._rest_get(f"/slurm/{self.api_version}/jobs")
+        errors = body.get("errors") or []
+        if errors:
+            msgs = "; ".join(e.get("error", str(e)) for e in errors)
+            raise RuntimeError(f"slurmrestd error: {msgs}")
+
+        result: list[dict] = []
+        for job in body.get("jobs", []):
+            name = job.get("name", "")
+            # Only show flowsim jobs (name starts with "flowsim-")
+            if not name.startswith("flowsim-"):
+                continue
+
+            state = job.get("job_state", ["UNKNOWN"])
+            if isinstance(state, list):
+                state = state[0] if state else "UNKNOWN"
+
+            if status_filter and state.upper() != status_filter.upper():
+                continue
+
+            result.append({
+                "job_id": str(job.get("job_id", "")),
+                "name": name,
+                "state": state,
+                "partition": job.get("partition", ""),
+                "nodes": job.get("nodes", ""),
+            })
+        return result
 
     def _parse_time_minutes(self) -> int:
         """Convert HH:MM:SS time_limit to total minutes."""

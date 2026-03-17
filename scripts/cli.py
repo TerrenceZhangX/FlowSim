@@ -162,6 +162,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Retrieve job logs (local/k8s/slurm)",
         add_help=False,
     )
+    sub.add_parser(
+        "list",
+        help="List FlowSim jobs (local/k8s/slurm)",
+        add_help=False,
+    )
+    sub.add_parser(
+        "cancel",
+        help="Cancel a running job (k8s/slurm)",
+        add_help=False,
+    )
 
     args, remaining = parser.parse_known_args(argv)
 
@@ -184,6 +194,18 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.status_profile import main_logs
 
         main_logs(remaining)
+        return 0
+
+    if args.command == "list":
+        from scripts.status_profile import main_list
+
+        main_list(remaining)
+        return 0
+
+    if args.command == "cancel":
+        from scripts.status_profile import main_cancel
+
+        main_cancel(remaining)
         return 0
 
     parser.print_help()

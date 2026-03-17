@@ -384,26 +384,39 @@ def main(argv: list[str] | None = None) -> None:
             print(scheduler.dry_run(spec))
     else:
         if is_pd:
-            result = scheduler.submit_pd_pair(spec)
+            results = scheduler.submit_pd_pair(spec)
+            for r in results:
+                print(r.message)
+            # Use the first result for follow-up hints
+            result = results[0]
         else:
             result = scheduler.submit(spec)
-        print(result)
+            print(result.message)
+
         # Tell user where to find results
         print()
-        print(f"Traces: {spec.output_dir}")
-        print(f"Logs:   {spec.log_dir}")
-        if args.scheduler == "k8s":
+        print(f"Traces: {result.output_dir}")
+        print(f"Logs:   {result.output_dir}/logs/")
+        job_id = result.job_id
+        sched = args.scheduler
+
+        if sched == "k8s":
             if args.k8s_pvc:
                 print(f"  (persisted on PVC '{args.k8s_pvc}')")
             else:
                 print(f"  (persisted at hostPath '{args.k8s_host_output_dir}' on the node)")
-            print(f"\nTo check status:  flowsim status --scheduler k8s --job {spec.default_job_name()[:63]}")
-            print(f"To view logs:     flowsim logs   --scheduler k8s --job {spec.default_job_name()[:63]}")
-        elif args.scheduler == "slurm":
+            print(f"\nTo check status:  flowsim status --scheduler k8s --job {job_id}")
+            print(f"To view logs:     flowsim logs   --scheduler k8s --job {job_id}")
+            print(f"To follow logs:   flowsim logs   --scheduler k8s --job {job_id} --follow")
+            print(f"To cancel:        flowsim cancel --scheduler k8s --job {job_id}")
+        elif sched == "slurm":
             print(f"  (on cluster shared filesystem)")
-            print(f"\nTo check status:  flowsim status --scheduler slurm --job <JOB_ID>")
+            print(f"\nTo check status:  flowsim status --scheduler slurm --job {job_id}")
+            print(f"To view logs:     flowsim logs   --scheduler slurm --job {job_id}")
+            print(f"To cancel:        flowsim cancel --scheduler slurm --job {job_id}")
         else:
-            print(f"\nTo view logs:     flowsim logs   --scheduler local --job {spec.default_job_name()}")
+            print(f"\nTo view logs:     flowsim logs   --scheduler local --job {job_id}")
+        print(f"To list all jobs: flowsim list   --scheduler {sched}")
 
 
 _INIT_HINT = "Run 'flowsim init' to create config files."

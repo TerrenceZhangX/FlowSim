@@ -9,6 +9,17 @@ from typing import Optional
 
 
 @dataclass
+class JobResult:
+    """Structured return value from ``submit()``."""
+
+    job_id: str
+    scheduler: str          # "local", "k8s", "slurm"
+    state: str              # "Submitted", "Completed", "Failed"
+    output_dir: str = ""
+    message: str = ""
+
+
+@dataclass
 class ProfileJobSpec:
     """All parameters needed to run a stage-profiling job.
 
@@ -153,8 +164,12 @@ class BaseScheduler(abc.ABC):
         """Render the job manifest / script as a string."""
 
     @abc.abstractmethod
-    def submit(self, spec: ProfileJobSpec) -> str:
-        """Submit the job and return a job identifier string."""
+    def submit(self, spec: ProfileJobSpec) -> JobResult:
+        """Submit the job and return a structured :class:`JobResult`."""
+
+    def cancel(self, job_id: str) -> str:
+        """Cancel a running or pending job. Returns a status message."""
+        raise NotImplementedError(f"{type(self).__name__} does not support cancel")
 
     def status(self, job_id: str) -> dict:
         """Query job status. Returns dict with at least 'state' key.
@@ -169,7 +184,7 @@ class BaseScheduler(abc.ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not support status queries")
 
-    def logs(self, job_id: str, *, tail: int = 100) -> str:
+    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """Retrieve recent log output for a job.
 
         Parameters
@@ -178,8 +193,26 @@ class BaseScheduler(abc.ABC):
             Job name (K8s) or job ID (Slurm) or log prefix (local).
         tail : int
             Number of lines from the end to return.
+        follow : bool
+            If True, stream logs in real time (blocking).
         """
         raise NotImplementedError(f"{type(self).__name__} does not support log retrieval")
+
+    def list_jobs(self, *, status_filter: str = "") -> list[dict]:
+        """List jobs managed by this scheduler.
+
+        Parameters
+        ----------
+        status_filter : str
+            If non-empty, only return jobs matching this state
+            (e.g., ``"Running"``, ``"Succeeded"``, ``"PENDING"``).
+
+        Returns
+        -------
+        list[dict]
+            Each dict has at least ``{"job_id": ..., "state": ..., "name": ...}``.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support list")
 
     def dry_run(self, spec: ProfileJobSpec) -> str:
         """Render and return the manifest without submitting."""
@@ -191,8 +224,8 @@ class BaseScheduler(abc.ABC):
         decode = self.render(spec.as_decode())
         return f"# === PREFILL INSTANCE ===\n{prefill}\n# === DECODE INSTANCE ===\n{decode}"
 
-    def submit_pd_pair(self, spec: ProfileJobSpec) -> str:
+    def submit_pd_pair(self, spec: ProfileJobSpec) -> list[JobResult]:
         """Submit both prefill and decode jobs."""
         r1 = self.submit(spec.as_prefill())
         r2 = self.submit(spec.as_decode())
-        return f"[prefill] {r1}\n[decode]  {r2}"
+        return [r1, r2]

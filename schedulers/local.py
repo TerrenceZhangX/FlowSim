@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from schedulers.base import BaseScheduler, ProfileJobSpec
+from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
 
 
 class LocalScheduler(BaseScheduler):
@@ -52,7 +52,7 @@ class LocalScheduler(BaseScheduler):
         lines.append(spec.build_shell_command())
         return "\n".join(lines)
 
-    def submit(self, spec: ProfileJobSpec) -> str:
+    def submit(self, spec: ProfileJobSpec) -> JobResult:
         """Run the profiling command locally as a subprocess.
 
         stdout and stderr are streamed to the terminal *and* saved to
@@ -115,16 +115,32 @@ class LocalScheduler(BaseScheduler):
             t_err.join()
 
         if proc.returncode != 0:
-            return (
-                f"[local] {job_name} FAILED (exit code {proc.returncode})\n"
-                f"[local] stdout log: {stdout_path}\n"
-                f"[local] stderr log: {stderr_path}"
+            return JobResult(
+                job_id=job_name,
+                scheduler="local",
+                state="Failed",
+                output_dir=spec.output_dir,
+                message=(
+                    f"{job_name} FAILED (exit code {proc.returncode})\n"
+                    f"stdout log: {stdout_path}\n"
+                    f"stderr log: {stderr_path}"
+                ),
             )
-        return (
-            f"[local] {job_name} completed successfully\n"
-            f"[local] stdout log: {stdout_path}\n"
-            f"[local] stderr log: {stderr_path}"
+        return JobResult(
+            job_id=job_name,
+            scheduler="local",
+            state="Completed",
+            output_dir=spec.output_dir,
+            message=(
+                f"{job_name} completed successfully\n"
+                f"stdout log: {stdout_path}\n"
+                f"stderr log: {stderr_path}"
+            ),
         )
+
+    def cancel(self, job_id: str) -> str:
+        """Local jobs run synchronously, so cancel is not applicable."""
+        return f"Local jobs run synchronously and cannot be cancelled. Job: {job_id}"
 
     def status(self, job_id: str) -> dict:
         """Check local job status by looking for log files.
@@ -158,7 +174,7 @@ class LocalScheduler(BaseScheduler):
             "output_hint": trace_dir,
         }
 
-    def logs(self, job_id: str, *, tail: int = 100) -> str:
+    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """List log files for a local job and print access commands."""
         import glob
 
@@ -173,6 +189,12 @@ class LocalScheduler(BaseScheduler):
 
         if not matches:
             return f"No logs found in {log_dir} matching '{job_id}'"
+
+        if follow:
+            stdout_files = sorted(f for f in matches if f.endswith(".stdout.log"))
+            if stdout_files:
+                return f"Follow logs with:\n  tail -f {stdout_files[-1]}"
+            return f"No stdout log found to follow for '{job_id}'"
 
         parts = [f"Log directory: {log_dir}", ""]
         parts.append(f"Files ({len(matches)}):")
@@ -189,6 +211,10 @@ class LocalScheduler(BaseScheduler):
             parts.append(f"  less {stdout_files[-1]}")
         if stderr_files:
             parts.append(f"  less {stderr_files[-1]}")
+        if stdout_files:
+            parts.append("")
+            parts.append("Follow logs:")
+            parts.append(f"  tail -f {stdout_files[-1]}")
 
         trace_dir = os.path.join(self.workdir, "stage_traces")
         parts.append("")
@@ -196,3 +222,41 @@ class LocalScheduler(BaseScheduler):
         parts.append(f"  ls {trace_dir}")
 
         return "\n".join(parts)
+
+    def list_jobs(self, *, status_filter: str = "") -> list[dict]:
+        """List local jobs by scanning log files."""
+        import glob
+        import re
+
+        log_dir = os.path.join(self.workdir, "stage_traces", "logs")
+        pattern = os.path.join(log_dir, "*.stdout.log")
+        matches = sorted(glob.glob(pattern))
+
+        jobs: list[dict] = []
+        for path in matches:
+            basename = os.path.basename(path)
+            # Parse: {job_name}_{timestamp}.stdout.log
+            m = re.match(r"^(.+)_(\d+)\.stdout\.log$", basename)
+            if not m:
+                continue
+            name = m.group(1)
+            ts = m.group(2)
+            stderr = path.replace(".stdout.log", ".stderr.log")
+            stderr_size = os.path.getsize(stderr) if os.path.exists(stderr) else 0
+            # If stderr has content, might have failed; otherwise completed
+            state = "Completed"
+            if stderr_size > 0:
+                # Check if there's an error indicator in stderr
+                state = "Completed"  # local jobs are synchronous; if log exists, it finished
+            jobs.append({
+                "job_id": name,
+                "name": name,
+                "state": state,
+                "timestamp": ts,
+            })
+
+        if status_filter:
+            filt = status_filter.lower()
+            jobs = [j for j in jobs if j["state"].lower() == filt]
+
+        return jobs
