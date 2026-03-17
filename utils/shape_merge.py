@@ -166,9 +166,17 @@ def merge_shapes(
             stats["already_ok"] += 1
             continue
 
-        # Look up the nth occurrence in shape CSV
+        # Look up the nth occurrence in shape CSV.  Timing and shape
+        # passes must capture the same number of batches so kernel
+        # counts match 1:1.  If they don't, it's a configuration bug.
         shape_entries = shape_lookup.get(kname, [])
-        if idx < len(shape_entries):
+        if shape_entries:
+            if idx >= len(shape_entries):
+                raise ValueError(
+                    f"Kernel {kname!r} has {len(shape_entries)} entries in "
+                    f"shape CSV but timing CSV needs occurrence #{idx}. "
+                    f"Timing and shape passes captured different batch counts."
+                )
             shape_row = shape_entries[idx]
             # Copy shape columns if non-N/A
             for col in _SHAPE_COLS:
@@ -178,6 +186,14 @@ def merge_shapes(
             # Also copy Descriptions if timing row is empty
             if not row.get("Descriptions") and shape_row.get("Descriptions"):
                 row["Descriptions"] = shape_row["Descriptions"]
+            # Copy 'op' and 'operation' when timing row lacks them
+            # (CUDA-graph mode often produces empty or 'TBD' ops)
+            for op_col in ("op", "operation"):
+                timing_op = (row.get(op_col) or "").strip()
+                if timing_op in ("", "TBD"):
+                    shape_op = (shape_row.get(op_col) or "").strip()
+                    if shape_op and shape_op != "TBD":
+                        row[op_col] = shape_op
             merged_rows.append(row)
             stats["merged"] += 1
         else:

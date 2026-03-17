@@ -1,28 +1,52 @@
 #!/usr/bin/env python
-"""Stage-separated profiling: collect prefill (EXTEND) and decode traces independently.
+"""Stage-separated profiling: collect prefill (EXTEND) and decode traces from each request.
 
-Uses SGLang's native `profile_by_stage` API to automatically split a single
-inference request into two traces:
-  - <ts>-TP-<rank>-EXTEND.trace.json.gz   (prefill phase)
-  - <ts>-TP-<rank>-DECODE.trace.json.gz   (decode phase)
+Each inference request produces **two** separate traces via SGLang's
+``profile_by_stage`` API:
+  - ``<ts>-TP-<rank>-EXTEND.trace.json.gz``  (prefill phase)
+  - ``<ts>-TP-<rank>-DECODE.trace.json.gz``  (decode phase)
+
+Request parameters
+------------------
+``--input-len``
+    Number of **new** prefill tokens per request.  These are the tokens
+    actually processed during the EXTEND phase.
+``--existing-ctx``
+    Number of tokens already present in KV cache (radix cache hit).
+    A seed request populates the cache before profiling.  Set to 0
+    for cold prefill (no cache hit).  Default: 0.
+``--bs``
+    Batch size — number of concurrent requests sent in one profiling step.
+``--decode-tokens``
+    Number of decode tokens to generate (and decode batches to profile).
+    The profiler captures 1 EXTEND batch and ``decode_tokens`` DECODE
+    batches.  Default: 32.
+
+    .. note:: SGLang's profiler uses a ``count > target`` stop condition
+       (fencepost), so we pass ``num_steps = decode_tokens - 1`` to
+       capture exactly ``decode_tokens`` batches.
 
 Workflow
 --------
 1. Launch or connect to a running SGLang server.
 2. Send warmup requests so CUDA graphs are captured *before* profiling.
-3. Call ``/start_profile`` with ``profile_by_stage=True, num_steps=1``.
-4. Send a single inference request — the profiler automatically stops
-   after 1 prefill batch + 1 decode batch.
-5. Optionally parse the resulting traces with ``run_parse.py``.
+3. (if existing_ctx > 0) Flush cache, send a seed request to populate KV cache.
+4. Call ``/start_profile`` with ``profile_by_stage=True``.
+5. Send *bs* concurrent inference requests.
+6. The profiler automatically stops after 1 EXTEND + ``decode_tokens`` DECODE
+   batches and writes both traces.  (Internally ``num_steps = decode_tokens - 1``
+   because the profiler stop condition is ``count > target``.)
+7. Parse the resulting traces with ``run_parse.py``.
 
 Modes
 -----
 Use ``--collect {perf,shapes,all}`` to choose what to collect:
 
-- ``perf``  — sweep a (bs, ctx) grid, collect traces, parse, and analyze.
-- ``shapes`` — re-collect without CUDA graph to capture kernel input shapes,
-  then merge shapes into the timing CSVs.
-- ``all``   — run perf, auto-restart the server, then run shapes.
+- ``perf``    — collect traces for a single (bs, input_len, existing_ctx) point,
+              parse, and run cross-rank analysis.
+- ``shapes``  — re-collect without CUDA graph to capture kernel input shapes,
+              then merge shapes into the timing CSVs (both EXTEND and DECODE).
+- ``all``     — run perf, auto-restart the server, then run shapes.
 
 Notes
 -----
@@ -35,41 +59,40 @@ Notes
 
 Example — single point
   python scripts/run_stage_profile.py \\
+      --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --bs 1 --ctx 2048 --decode-tokens 32 \\
+      --bs 1 --input-len 2048 --decode-tokens 32 \\
       --output-dir /flowsim/stage_traces
 
-Example — perf sweep
+Example — with existing KV cache context
   python scripts/run_stage_profile.py \\
       --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --output-dir /flowsim/stage_traces_sweep
+      --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 32 \\
+      --output-dir /flowsim/stage_traces
 
 Example — launch server + full pipeline (perf → shapes)
   python scripts/run_stage_profile.py \\
       --collect all \\
       --launch-server \\
       --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001" \\
-      --output-dir /flowsim/stage_traces_sweep
+      --bs 1 --input-len 2048 \\
+      --output-dir /flowsim/stage_traces
 """
 
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
-import csv
 import glob
 import json
 import os
+import random
 import re
 import shlex
 import signal
-import socket
 import subprocess
 import sys
-import threading
 import time
-from collections import defaultdict
 from typing import Optional
 
 # Add utils/ to path for reusable modules
@@ -79,42 +102,36 @@ if _UTILS_DIR not in sys.path:
     sys.path.insert(0, _UTILS_DIR)
 
 from cross_rank_agg import (
-    classify_kernel as _classify_kernel,
-    is_comm as _is_comm,
     aggregate as analyze_traces_from_csvs,
     print_result as print_analysis,
 )
+from net import wait_for_port
 from shape_merge import merge_shapes_dir
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_BS_GRID = [1, 4, 16, 64, 128]
-DEFAULT_CTX_GRID = [2048, 4096, 8192, 12288, 16384, 24576, 32768]
-DEFAULT_INPUT_LEN_GRID = [32, 64, 128, 256, 512, 1024, 2048, 4096]
-DEFAULT_EXISTING_CTX_GRID = [2048, 4096, 8192, 12288, 16384, 24576, 32768]
-DEFAULT_PREFILL_BS_GRID = [1, 4, 16, 64, 128]
-DEFAULT_MAX_PREFILL_TOKENS = 131072
 DEFAULT_WARMUP_N = 5
 DEFAULT_DECODE_TOKENS = 32
-DEFAULT_NUM_STEPS = 1
+DEFAULT_MAX_PREFILL_TOKENS = 131072
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def wait_for_port(host: str, port: int, timeout: int = 600) -> bool:
-    """Block until *host:port* accepts a TCP connection."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=2):
-                return True
-        except Exception:
-            time.sleep(2)
-    return False
+def _sample_token_ids(
+    n: int, vocab_size: int = 32000, seed: int = 42
+) -> list[int]:
+    """Sample *n* random token IDs from ``[0, vocab_size)``.
+
+    Uses a fixed seed so prompts are deterministic across runs,
+    ensuring radix-cache prefix matching works correctly.
+    """
+    rng = random.Random(seed)
+    return [rng.randint(0, vocab_size - 1) for _ in range(n)]
 
 
+# ---------------------------------------------------------------------------
 def _post(url: str, payload: dict, timeout: int = 300) -> dict | str:
     """Send a POST request and return JSON (dict) or plain text (str)."""
     import urllib.request
@@ -157,36 +174,6 @@ def flush_cache(host: str, port: int) -> bool:
         return False
 
 
-def seed_prefix(
-    host: str, port: int, prefix_tokens: int, *, unique_id: str = "A"
-) -> None:
-    """Send a request to populate the radix cache with *prefix_tokens* tokens.
-
-    The prompt is deterministic for a given *unique_id* so that a later request
-    sharing the same prefix will hit the cache.  The request generates only 1
-    token to minimize overhead.
-    """
-    url = f"http://{host}:{port}/generate"
-    # Build a prompt of approximately prefix_tokens length.
-    # Use a repeating pattern that's unique per unique_id to avoid
-    # accidental collisions with warmup prompts.
-    word = f"Prefix{unique_id} "
-    prompt = word * max(1, prefix_tokens // 2)
-    payload = {
-        "text": prompt,
-        "sampling_params": {"max_new_tokens": 1, "temperature": 0},
-    }
-    print(
-        f"[seed] Seeding prefix cache with ~{prefix_tokens} tokens "
-        f"(id={unique_id}) …"
-    )
-    try:
-        _post(url, payload, timeout=300)
-        print("[seed] Prefix cached ✓")
-    except Exception as exc:
-        print(f"[seed] FAILED: {exc}")
-
-
 def warmup(host: str, port: int, n: int, bs: int, ctx: int) -> None:
     """Send *n* short requests to trigger CUDA graph capture before profiling."""
     url = f"http://{host}:{port}/generate"
@@ -209,7 +196,7 @@ def start_stage_profile(
     host: str,
     port: int,
     output_dir: str,
-    num_steps: int = DEFAULT_NUM_STEPS,
+    num_steps: int = 1,
 ) -> bool:
     """Call ``/start_profile`` with ``profile_by_stage=True``."""
     url = f"http://{host}:{port}/start_profile"
@@ -231,60 +218,6 @@ def start_stage_profile(
         return False
 
 
-def send_requests(
-    host: str, port: int, bs: int, ctx: int, decode_tokens: int
-) -> list[threading.Thread]:
-    """Send *bs* inference requests **concurrently** with ~*ctx* input tokens.
-
-    All requests are fired in parallel so the scheduler batches them together
-    in a single EXTEND / DECODE step.  Returns a list of daemon threads that
-    are still running (waiting for the server to finish generating).
-    """
-    url = f"http://{host}:{port}/generate"
-    prompt = "Hello " * max(1, ctx // 2)
-    payload = {
-        "text": prompt,
-        "sampling_params": {
-            "max_new_tokens": decode_tokens,
-            "temperature": 0,
-        },
-    }
-
-    if bs == 1:
-        # Single request — keep it simple & synchronous
-        print(f"[request] bs=1  ctx≈{ctx}  decode={decode_tokens}")
-        try:
-            resp = _post(url, payload, timeout=600)
-            out_text = (
-                resp.get("text", "") if isinstance(resp, dict) else str(resp)
-            )
-            print(f"  req 0: {len(out_text.split())} output tokens")
-        except Exception as exc:
-            print(f"  req 0: FAILED {exc}")
-        return []
-
-    # bs > 1 — fire all requests concurrently via threads
-    print(f"[request] bs={bs}  ctx≈{ctx}  decode={decode_tokens}  (concurrent)")
-    done_count = [0]  # mutable counter shared across threads
-    lock = threading.Lock()
-
-    def _send_one(_i: int) -> None:
-        try:
-            _post(url, payload, timeout=600)
-        except Exception:
-            pass
-        with lock:
-            done_count[0] += 1
-
-    threads: list[threading.Thread] = []
-    for i in range(bs):
-        t = threading.Thread(target=_send_one, args=(i,), daemon=True)
-        t.start()
-        threads.append(t)
-    print(f"  fired {bs} concurrent requests")
-    return threads
-
-
 def wait_for_traces(
     output_dir: str,
     timeout: int = 60,
@@ -303,71 +236,23 @@ def wait_for_traces(
     return sorted(glob.glob(os.path.join(output_dir, "*.trace.json.gz")))
 
 
-def collect_one(
-    host: str,
-    port: int,
-    bs: int,
-    ctx: int,
-    decode_tokens: int,
-    output_dir: str,
-    warmup_n: int,
-    num_steps: int,
-) -> list[str]:
-    """Collect one (EXTEND + DECODE) trace pair for a single (bs, ctx) point."""
-    os.makedirs(output_dir, exist_ok=True)
-
-    # 1. warmup
-    warmup(host, port, n=warmup_n, bs=bs, ctx=ctx)
-
-    # 2. start profiler
-    if not start_stage_profile(host, port, output_dir, num_steps):
-        print("[ERROR] Could not start profiler — skipping this config")
-        return []
-
-    # 3. send inference request(s) — concurrently for bs > 1
-    req_threads = send_requests(host, port, bs, ctx, decode_tokens)
-
-    # 4. wait for traces (profiler auto-stops after num_steps batches)
-    print("[wait] Waiting for profiler to auto-stop …")
-    traces = wait_for_traces(output_dir, timeout=120)
-    # Stabilisation wait: let slower DP workers export their traces
-    prev_count = len(traces)
-    for _ in range(6):  # up to 12s extra
-        time.sleep(2)
-        new_traces = sorted(
-            glob.glob(os.path.join(output_dir, "*.trace.json.gz"))
-        )
-        if len(new_traces) == prev_count:
-            break
-        traces = new_traces
-        prev_count = len(traces)
-    print(f"[done] {len(traces)} trace files in {output_dir}")
-    for t in traces:
-        sz = os.path.getsize(t) / 1024
-        print(f"       {os.path.basename(t)}  ({sz:.1f} KB)")
-    print()
-
-    # 5. wait for in-flight requests to complete (avoid dangling connections)
-    if req_threads:
-        print(f"[cleanup] waiting for {len(req_threads)} in-flight requests …")
-        for t in req_threads:
-            t.join(timeout=300)
-        print("[cleanup] done")
-
-    return traces
-
-
 def collect_one_prefill(
     host: str,
     port: int,
     bs: int,
     input_len: int,
     existing_ctx: int,
+    decode_tokens: int,
     output_dir: str,
     warmup_n: int,
     num_steps: int,
 ) -> tuple[list[str], bool]:
-    """Collect one EXTEND trace for a prefill sweep point.
+    """Collect traces for a single (bs, input_len, existing_ctx) point.
+
+    Controls the exact prefill workload:
+
+    - ``input_len`` new tokens are prefilled (EXTEND).
+    - ``existing_ctx`` tokens are already in KV cache (radix cache hit).
 
     Returns ``(traces, ok)`` where *ok* is False if OOM or fatal error
     occurred (caller should skip larger batch sizes).
@@ -375,8 +260,8 @@ def collect_one_prefill(
     Protocol:
 
     1. ``/flush_cache`` — clear radix + KV cache.
-    2. (if existing_ctx > 0) Send *bs* identical seed requests to
-       populate the radix cache with ``existing_ctx`` tokens.
+    2. (if existing_ctx > 0) Send a seed request to populate the radix
+       cache with ``existing_ctx`` tokens.
     3. ``/start_profile`` — arm the profiler.
     4. Send *bs* concurrent profiling requests, each with
        ``existing_ctx + input_len`` tokens.  The prefix hits cache;
@@ -388,16 +273,15 @@ def collect_one_prefill(
     os.makedirs(output_dir, exist_ok=True)
     total_prompt = existing_ctx + input_len
 
-    # Token-exact prompts via raw token IDs.
-    PREFIX_TOKEN = 1000
-    EXTEND_TOKEN = 2000
-
+    # Token-exact prompts via random token IDs from vocabulary.
+    # Using fixed seeds ensures deterministic prompts so radix-cache
+    # prefix matching works across seed and profile requests.
     seed_ids: list[int] = (
-        [PREFIX_TOKEN] * existing_ctx if existing_ctx > 0 else []
+        _sample_token_ids(existing_ctx, seed=42) if existing_ctx > 0 else []
     )
-    profile_ids: list[int] = [PREFIX_TOKEN] * existing_ctx + [
-        EXTEND_TOKEN
-    ] * input_len
+    profile_ids: list[int] = _sample_token_ids(
+        existing_ctx, seed=42
+    ) + _sample_token_ids(input_len, seed=123)
 
     url = f"http://{host}:{port}/generate"
 
@@ -434,18 +318,17 @@ def collect_one_prefill(
         f"existing_ctx={existing_ctx}  total_tokens={bs * total_prompt}"
     )
 
-    # SGLang /generate accepts input_ids as List[List[int]] for batched requests.
-    # This ensures all bs prompts are scheduled in ONE extend batch.
     if bs == 1:
-        batch_ids = profile_ids  # List[int]
+        batch_ids = profile_ids
     else:
-        batch_ids = [profile_ids] * bs  # List[List[int]]
+        batch_ids = [profile_ids] * bs
 
     payload_profile = {
         "input_ids": batch_ids,
         "sampling_params": {
-            "max_new_tokens": DEFAULT_DECODE_TOKENS,
-            "temperature": 0,
+            "max_new_tokens": decode_tokens,
+            "temperature": 0.8,
+            "ignore_eos": True,
         },
     }
 
@@ -462,7 +345,6 @@ def collect_one_prefill(
             print(f"[prefill] Profile request FAILED: {exc}")
 
     if oom_detected:
-        # Wait a moment for server to recover, then flush
         time.sleep(3)
         flush_cache(host, port)
         return [], False
@@ -510,8 +392,8 @@ def launch_server(
     os.makedirs(log_dir, exist_ok=True)
     ts = int(time.time())
     prefix = "shape_server" if disable_cuda_graph else "server"
-    stdout_f = open(os.path.join(log_dir, f"{prefix}_{ts}.stdout.log"), "w")
-    stderr_f = open(os.path.join(log_dir, f"{prefix}_{ts}.stderr.log"), "w")
+    stdout_path = os.path.join(log_dir, f"{prefix}_{ts}.stdout.log")
+    stderr_path = os.path.join(log_dir, f"{prefix}_{ts}.stderr.log")
 
     env = os.environ.copy()
     env["SGLANG_PROFILE_KERNELS"] = "1"
@@ -527,6 +409,8 @@ def launch_server(
     label = "(no-CUDA-graph)" if disable_cuda_graph else ""
     print(f"[server] Launching {label}: {' '.join(cmd)}")
     preexec = getattr(os, "setsid", None)
+    stdout_f = open(stdout_path, "w")
+    stderr_f = open(stderr_path, "w")
     proc = subprocess.Popen(
         cmd,
         stdout=stdout_f,
@@ -534,6 +418,8 @@ def launch_server(
         preexec_fn=preexec,
         env=env,
     )
+    # Attach file handles so kill_server can close them.
+    proc._log_files = (stdout_f, stderr_f)  # type: ignore[attr-defined]
     return proc
 
 
@@ -548,6 +434,11 @@ def kill_server(proc: subprocess.Popen) -> None:
             proc.wait(timeout=30)
         except Exception:
             proc.kill()
+    for fh in getattr(proc, "_log_files", ()):
+        try:
+            fh.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -610,19 +501,23 @@ def parse_traces(trace_dir: str, parse_output_dir: str) -> None:
 # ---------------------------------------------------------------------------
 # Shape collection (no-CUDA-graph pass)
 # ---------------------------------------------------------------------------
-def discover_grid(sweep_dir: str) -> list[tuple[int, int]]:
-    """Discover the (bs, ctx) grid from existing ``bs*_ctx*`` directories."""
-    grid = []
+_SUBDIR_RE = re.compile(r"^bs(\d+)_input(\d+)_ctx(\d+)$")
+
+
+def discover_subdirs(sweep_dir: str) -> list[tuple[str, int, int, int]]:
+    """Discover profiling subdirectories created by ``_run_perf``.
+
+    Returns a sorted list of ``(dirname, bs, input_len, existing_ctx)``
+    tuples for directories matching ``bs{N}_input{M}_ctx{K}``.
+    """
+    results = []
     for entry in sorted(os.listdir(sweep_dir)):
-        if entry.startswith("bs"):
-            parts = entry.split("_")
-            try:
-                bs = int(parts[0].replace("bs", ""))
-                ctx = int(parts[1].replace("ctx", ""))
-                grid.append((bs, ctx))
-            except (ValueError, IndexError):
-                continue
-    return sorted(grid)
+        m = _SUBDIR_RE.match(entry)
+        if m and os.path.isdir(os.path.join(sweep_dir, entry)):
+            results.append(
+                (entry, int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            )
+    return results
 
 
 def collect_shapes(
@@ -634,60 +529,52 @@ def collect_shapes(
     warmup_n: int = 3,
     num_steps: int = 1,
 ) -> list[str]:
-    """Run a shape-only profiling pass for all (bs, ctx) in the sweep.
+    """Run a shape-only profiling pass for all points in the sweep.
 
-    Collects traces into ``<sweep>/<bs_ctx>/shape_traces/`` and parses them
-    into ``<sweep>/<bs_ctx>/shape_parsed/``.  Shape data is needed to map
+    Collects traces into ``<sweep>/<subdir>/shape_traces/`` and parses them
+    into ``<sweep>/<subdir>/shape_parsed/``.  Shape data is needed to map
     kernel names to tensor dimensions (unavailable when CUDA graph is active).
+
+    Uses ``collect_one_prefill`` (exact token counts via ``input_ids``) so
+    that kernel shapes match the timing pass exactly.
     """
-    grid = discover_grid(sweep_dir)
-    if not grid:
-        print(f"[shapes] No bs*_ctx* dirs found in {sweep_dir}")
+    subdirs = discover_subdirs(sweep_dir)
+    if not subdirs:
+        print(f"[shapes] No bs*_input*_ctx* dirs found in {sweep_dir}")
         return []
 
-    print(f"[shapes] Collecting shapes for {len(grid)} (bs, ctx) points")
-    print(f"[shapes] Grid: {grid}\n")
-
-    # One global warmup with a medium config
-    mid = grid[len(grid) // 2]
-    warmup(host, port, n=warmup_n, bs=mid[0], ctx=mid[1])
+    print(f"[shapes] Collecting shapes for {len(subdirs)} points")
+    print(f"[shapes] Dirs: {[s[0] for s in subdirs]}\n")
 
     results = []
-    for i, (bs, ctx) in enumerate(grid):
-        tag = f"bs{bs}_ctx{ctx}"
+    for i, (tag, bs, input_len, existing_ctx) in enumerate(subdirs):
         trace_dir = os.path.join(sweep_dir, tag, "shape_traces")
         parse_dir = os.path.join(sweep_dir, tag, "shape_parsed")
-        os.makedirs(trace_dir, exist_ok=True)
 
         # Skip if already collected
         existing = glob.glob(os.path.join(parse_dir, "*DECODE*.csv"))
         if existing:
-            print(f"[{i+1}/{len(grid)}] {tag}: shape CSVs exist, skipping")
+            print(f"[{i+1}/{len(subdirs)}] {tag}: shape CSVs exist, skipping")
             results.append(parse_dir)
             continue
 
-        print(f"[{i+1}/{len(grid)}] {tag}: collecting shape traces …")
+        print(f"[{i+1}/{len(subdirs)}] {tag}: collecting shape traces …")
 
-        if not start_stage_profile(host, port, trace_dir, num_steps):
-            print(f"  [WARN] Could not start profiler for {tag}")
+        traces, ok = collect_one_prefill(
+            host=host,
+            port=port,
+            bs=bs,
+            input_len=input_len,
+            existing_ctx=existing_ctx,
+            decode_tokens=decode_tokens,
+            output_dir=trace_dir,
+            warmup_n=warmup_n,
+            num_steps=num_steps,
+        )
+
+        if not ok:
+            print(f"  [WARN] OOM or error for {tag}")
             continue
-
-        req_threads = send_requests(host, port, bs, ctx, decode_tokens)
-        traces = wait_for_traces(trace_dir, timeout=120)
-        # Stabilise
-        prev = len(traces)
-        for _ in range(6):
-            time.sleep(2)
-            new = sorted(glob.glob(os.path.join(trace_dir, "*.trace.json.gz")))
-            if len(new) == prev:
-                break
-            traces = new
-            prev = len(new)
-        print(f"  {len(traces)} trace files")
-
-        if req_threads:
-            for t in req_threads:
-                t.join(timeout=300)
 
         if traces:
             parse_traces(trace_dir, parse_dir)
@@ -697,11 +584,10 @@ def collect_shapes(
 
 
 def merge_shapes(sweep_dir: str, stage: str = "DECODE") -> list[str]:
-    """Merge shape CSVs into timing CSVs for every (bs, ctx) in the sweep."""
-    grid = discover_grid(sweep_dir)
+    """Merge shape CSVs into timing CSVs for every point in the sweep."""
+    subdirs = discover_subdirs(sweep_dir)
     all_merged: list[str] = []
-    for bs, ctx in grid:
-        tag = f"bs{bs}_ctx{ctx}"
+    for tag, _bs, _il, _ec in subdirs:
         timing_dir = os.path.join(sweep_dir, tag, "parsed")
         shape_dir = os.path.join(sweep_dir, tag, "shape_parsed")
         merged_dir = os.path.join(sweep_dir, tag, "merged")
@@ -737,12 +623,11 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     mode = p.add_argument_group("collection mode")
     mode.add_argument(
         "--collect",
-        choices=["perf", "shapes", "all", "prefill"],
+        choices=["perf", "shapes", "all"],
         required=True,
         help=(
             "Collection mode.\n"
-            "  perf    — decode trace sweep (bs, ctx) + parse + analyze\n"
-            "  prefill — prefill trace sweep (input_len, existing_ctx) + parse + analyze\n"
+            "  perf    — trace sweep (bs, ctx) + parse + analyze\n"
             "  shapes  — shape-only pass (no CUDA graph) + merge into timing CSVs\n"
             "  all     — perf, then auto-restart server, then shapes + merge\n"
         ),
@@ -754,12 +639,26 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
 
     wl = p.add_argument_group("workload")
     wl.add_argument("--bs", type=int, default=1, help="Batch size")
-    wl.add_argument("--ctx", type=int, default=2048, help="Approx input length")
+    wl.add_argument(
+        "--input-len",
+        type=int,
+        default=2048,
+        help="Number of new prefill tokens per request (EXTEND)",
+    )
+    wl.add_argument(
+        "--existing-ctx",
+        type=int,
+        default=0,
+        help="Number of tokens already in KV cache (0 = cold prefill)",
+    )
     wl.add_argument(
         "--decode-tokens",
         type=int,
         default=DEFAULT_DECODE_TOKENS,
-        help="Max new tokens per request",
+        help=(
+            "Number of decode tokens to generate per request. "
+            "Also controls how many decode batches the profiler captures."
+        ),
     )
     wl.add_argument(
         "--warmup-n",
@@ -768,57 +667,15 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         help="Number of warmup requests before profiling",
     )
     wl.add_argument(
-        "--num-steps",
-        type=int,
-        default=DEFAULT_NUM_STEPS,
-        help="Number of prefill + decode batches to capture (1 = one of each)",
-    )
-
-    grid = p.add_argument_group("sweep grid")
-    grid.add_argument(
-        "--bs-grid",
-        type=str,
-        default=",".join(str(x) for x in DEFAULT_BS_GRID),
-        help="Comma-separated batch sizes for sweep",
-    )
-    grid.add_argument(
-        "--ctx-grid",
-        type=str,
-        default=",".join(str(x) for x in DEFAULT_CTX_GRID),
-        help="Comma-separated context lengths for decode sweep",
-    )
-    grid.add_argument(
-        "--input-len-grid",
-        type=str,
-        default=",".join(str(x) for x in DEFAULT_INPUT_LEN_GRID),
-        help="Comma-separated input lengths for prefill sweep",
-    )
-    grid.add_argument(
-        "--existing-ctx-grid",
-        type=str,
-        default=",".join(str(x) for x in DEFAULT_EXISTING_CTX_GRID),
-        help="Comma-separated existing context lengths for prefill sweep",
-    )
-    grid.add_argument(
-        "--prefill-bs-grid",
-        type=str,
-        default=",".join(str(x) for x in DEFAULT_PREFILL_BS_GRID),
-        help="Comma-separated batch sizes for prefill sweep (auto-stops on OOM)",
-    )
-    grid.add_argument(
         "--disable-chunked-prefill",
         action="store_true",
         help="Add --chunked-prefill-size -1 to server opts to disable chunking",
     )
-    grid.add_argument(
+    wl.add_argument(
         "--max-prefill-tokens",
         type=int,
         default=DEFAULT_MAX_PREFILL_TOKENS,
-        help=(
-            "Max tokens per prefill batch (must match server config).  "
-            "Used to compute max bs = max_prefill_tokens // input_len "
-            "and skip larger batch sizes without triggering OOM."
-        ),
+        help="Max tokens per prefill batch (used by server config)",
     )
 
     out = p.add_argument_group("output")
@@ -887,54 +744,65 @@ def _start_server(
 
 
 def _run_perf(args, summary: list[dict]) -> int:
-    """Collect perf traces, parse, and analyze over the (bs, ctx) grid."""
-    bs_list = [int(x) for x in args.bs_grid.split(",")]
-    ctx_list = [int(x) for x in args.ctx_grid.split(",")]
+    """Collect traces for a single (bs, input_len, existing_ctx, decode_tokens) point."""
+    bs = args.bs
+    input_len = args.input_len
+    existing_ctx = args.existing_ctx
 
-    total = len(bs_list) * len(ctx_list)
-    idx = 0
+    tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
+    sub_dir = os.path.join(args.output_dir, tag)
+    print(
+        f"{'=' * 60}\n"
+        f"bs={bs}  input_len={input_len}  existing_ctx={existing_ctx}  "
+        f"decode_tokens={args.decode_tokens}\n"
+        f"{'=' * 60}"
+    )
 
-    for bs in bs_list:
-        for ctx in ctx_list:
-            idx += 1
-            tag = f"bs{bs}_ctx{ctx}"
-            sub_dir = os.path.join(args.output_dir, tag)
-            print(
-                f"{'=' * 60}\n"
-                f"[{idx}/{total}] bs={bs}  ctx={ctx}\n"
-                f"{'=' * 60}"
-            )
-            traces = collect_one(
-                host=args.host,
-                port=args.port,
-                bs=bs,
-                ctx=ctx,
-                decode_tokens=args.decode_tokens,
-                output_dir=sub_dir,
-                warmup_n=args.warmup_n,
-                num_steps=args.num_steps,
-            )
-            summary.append(
-                {"bs": bs, "ctx": ctx, "traces": len(traces), "dir": sub_dir}
-            )
+    # collect_one_prefill uses input_ids for exact token count control.
+    # SGLang's profiler stops when batch_count > num_steps (not >=),
+    # so num_steps=N actually requires N+1 batches.  To capture exactly
+    # decode_tokens decode batches we pass num_steps = decode_tokens - 1.
+    traces, ok = collect_one_prefill(
+        host=args.host,
+        port=args.port,
+        bs=bs,
+        input_len=input_len,
+        existing_ctx=existing_ctx,
+        decode_tokens=args.decode_tokens,
+        output_dir=sub_dir,
+        warmup_n=args.warmup_n,
+        num_steps=max(1, args.decode_tokens - 1),
+    )
+    if not ok:
+        print("[ERROR] OOM during profiling")
+        return 1
 
-            if traces:
-                parse_dir = os.path.join(sub_dir, "parsed")
-                parse_traces(sub_dir, parse_dir)
+    summary.append(
+        {
+            "bs": bs,
+            "input_len": input_len,
+            "existing_ctx": existing_ctx,
+            "traces": len(traces),
+            "dir": sub_dir,
+        }
+    )
 
-            if traces:
-                for stage in ("EXTEND", "DECODE"):
-                    result = analyze_traces(sub_dir, parse_dir, stage=stage)
-                    if result:
-                        print_analysis(result)
-                        analysis_path = os.path.join(
-                            sub_dir, f"analysis_{stage.lower()}.json"
-                        )
-                        with open(analysis_path, "w") as af:
-                            json.dump(result, af, indent=2)
-                        summary[-1][f"{stage.lower()}_total_ms"] = round(
-                            result["total_kernel_us"] / 1000, 2
-                        )
+    if traces:
+        parse_dir = os.path.join(sub_dir, "parsed")
+        parse_traces(sub_dir, parse_dir)
+
+        for stage in ("EXTEND", "DECODE"):
+            result = analyze_traces(sub_dir, parse_dir, stage=stage)
+            if result:
+                print_analysis(result)
+                analysis_path = os.path.join(
+                    sub_dir, f"analysis_{stage.lower()}.json"
+                )
+                with open(analysis_path, "w") as af:
+                    json.dump(result, af, indent=2)
+                summary[-1][f"{stage.lower()}_total_ms"] = round(
+                    result["total_kernel_us"] / 1000, 2
+                )
     return 0
 
 
@@ -953,130 +821,10 @@ def _run_shapes(args) -> int:
         warmup_n=max(
             2, args.warmup_n // 2
         ),  # less warmup needed without CUDA graph
-        num_steps=args.num_steps,
+        num_steps=max(1, args.decode_tokens - 1),
     )
-    merge_shapes(sweep_dir)
-    return 0
-
-
-def _run_prefill(args, summary: list[dict]) -> int:
-    """Collect prefill traces over the (bs, input_len, existing_ctx) grid.
-
-    For each (input_len, existing_ctx) pair, compute the maximum batch size
-    that fits within ``max_prefill_tokens`` and skip anything larger.
-    If an OOM is still detected at runtime, larger *bs* values for the
-    same (input_len, existing_ctx) are also skipped.
-    """
-    prefill_bs_list = [int(x) for x in args.prefill_bs_grid.split(",")]
-    input_len_list = [int(x) for x in args.input_len_grid.split(",")]
-    ctx_list = [int(x) for x in args.existing_ctx_grid.split(",")]
-    max_prefill = getattr(
-        args, "max_prefill_tokens", DEFAULT_MAX_PREFILL_TOKENS
-    )
-
-    total = len(prefill_bs_list) * len(input_len_list) * len(ctx_list)
-    idx = 0
-    skip_count = 0
-
-    for input_len in input_len_list:
-        # Pre-compute the maximum bs that fits within max_prefill_tokens
-        max_bs_for_input = max_prefill // input_len if input_len > 0 else 1
-        print(
-            f"\n[prefill] input_len={input_len}: "
-            f"max_bs={max_bs_for_input} "
-            f"(max_prefill_tokens={max_prefill})"
-        )
-
-        for existing_ctx in ctx_list:
-            oom_hit = False
-            for bs in prefill_bs_list:
-                idx += 1
-
-                # Skip if bs exceeds the capacity limit
-                if bs > max_bs_for_input or oom_hit:
-                    reason = (
-                        "oom"
-                        if oom_hit
-                        else f"exceeds max_prefill ({bs}*{input_len}={bs * input_len} > {max_prefill})"
-                    )
-                    print(
-                        f"[{idx}/{total}] SKIP bs={bs} "
-                        f"input={input_len} ctx={existing_ctx} ({reason})"
-                    )
-                    summary.append(
-                        {
-                            "bs": bs,
-                            "input_len": input_len,
-                            "existing_ctx": existing_ctx,
-                            "traces": 0,
-                            "skipped": reason,
-                        }
-                    )
-                    skip_count += 1
-                    continue
-
-                tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
-                sub_dir = os.path.join(args.output_dir, tag)
-                print(
-                    f"{'=' * 60}\n"
-                    f"[{idx}/{total}] bs={bs}  input_len={input_len}  "
-                    f"existing_ctx={existing_ctx}\n"
-                    f"{'=' * 60}"
-                )
-                traces, ok = collect_one_prefill(
-                    host=args.host,
-                    port=args.port,
-                    bs=bs,
-                    input_len=input_len,
-                    existing_ctx=existing_ctx,
-                    output_dir=sub_dir,
-                    warmup_n=args.warmup_n,
-                    num_steps=args.num_steps,
-                )
-
-                if not ok:
-                    oom_hit = True
-                    summary.append(
-                        {
-                            "bs": bs,
-                            "input_len": input_len,
-                            "existing_ctx": existing_ctx,
-                            "traces": 0,
-                            "skipped": "oom",
-                        }
-                    )
-                    skip_count += 1
-                    continue
-
-                entry: dict = {
-                    "bs": bs,
-                    "input_len": input_len,
-                    "existing_ctx": existing_ctx,
-                    "traces": len(traces),
-                    "dir": sub_dir,
-                }
-                summary.append(entry)
-
-                if traces:
-                    parse_dir = os.path.join(sub_dir, "parsed")
-                    parse_traces(sub_dir, parse_dir)
-
-                if traces:
-                    for stage in ("EXTEND", "DECODE"):
-                        result = analyze_traces(sub_dir, parse_dir, stage=stage)
-                        if result:
-                            print_analysis(result)
-                            analysis_path = os.path.join(
-                                sub_dir, f"analysis_{stage.lower()}.json"
-                            )
-                            with open(analysis_path, "w") as af:
-                                json.dump(result, af, indent=2)
-                            entry[f"{stage.lower()}_total_ms"] = round(
-                                result["total_kernel_us"] / 1000, 2
-                            )
-
-    if skip_count:
-        print(f"\n[prefill] {skip_count} points skipped (capacity/OOM)")
+    merge_shapes(sweep_dir, stage="DECODE")
+    merge_shapes(sweep_dir, stage="EXTEND")
     return 0
 
 
@@ -1153,16 +901,6 @@ def main(argv: Optional[list] = None) -> int:
             if args.launch_server:
                 server_proc = _start_server(args, disable_cuda_graph=False)
             _run_perf(args, summary)
-            _write_summary(args, summary)
-            return 0
-
-        # ==================================================================
-        # --collect prefill
-        # ==================================================================
-        if args.collect == "prefill":
-            if args.launch_server:
-                server_proc = _start_server(args, disable_cuda_graph=False)
-            _run_prefill(args, summary)
             _write_summary(args, summary)
             return 0
 

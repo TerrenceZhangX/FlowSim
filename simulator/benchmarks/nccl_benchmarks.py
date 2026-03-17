@@ -66,7 +66,10 @@ def run_nccl_all_reduce_perf(
         if line.strip() and not line.strip().startswith("#"):
             fields = line.split()
             if len(fields) >= 6:
-                out_of_place_time = float(fields[5])
+                try:
+                    out_of_place_time = float(fields[5])
+                except ValueError:
+                    continue
                 break
 
     return out_of_place_time
@@ -108,7 +111,10 @@ def run_nccl_all_gather_perf(
         if line.strip() and not line.strip().startswith("#"):
             fields = line.split()
             if len(fields) >= 6:
-                out_of_place_time = float(fields[5])
+                try:
+                    out_of_place_time = float(fields[5])
+                except ValueError:
+                    continue
                 break
 
     return out_of_place_time
