@@ -107,6 +107,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     k8s = p.add_argument_group("kubernetes options")
     k8s.add_argument("--k8s-namespace", default="default")
     k8s.add_argument(
+        "--k8s-kubeconfig",
+        default="",
+        help="Path to kubeconfig file (empty = default lookup)",
+    )
+    k8s.add_argument(
+        "--k8s-context",
+        default="",
+        help="kubeconfig context to use",
+    )
+    k8s.add_argument(
         "--k8s-pvc",
         default="",
         help="PVC name for output volume (omit for emptyDir)",
@@ -130,6 +140,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     slurm = p.add_argument_group("slurm options")
     slurm.add_argument("--slurm-partition", default="gpu")
     slurm.add_argument("--slurm-time", default="02:00:00")
+    slurm.add_argument(
+        "--slurm-rest-url",
+        default="",
+        help="slurmrestd base URL (e.g. https://slurm.example.com:6820). "
+             "Required for --submit.",
+    )
+    slurm.add_argument(
+        "--slurm-jwt-token",
+        default="",
+        help="JWT token for slurmrestd auth. "
+             "Generate via: scontrol token lifespan=3600",
+    )
+    slurm.add_argument(
+        "--slurm-api-version",
+        default="v0.0.40",
+        help="slurmrestd OpenAPI version (default: v0.0.40)",
+    )
+    slurm.add_argument(
+        "--slurm-no-verify-ssl",
+        action="store_true",
+        help="Skip TLS certificate verification for slurmrestd",
+    )
     slurm.add_argument("--slurm-account", default="")
     slurm.add_argument("--slurm-constraint", default="")
     slurm.add_argument(
@@ -203,6 +235,8 @@ def _build_scheduler(args: argparse.Namespace):
             node_sel[k] = v
         return K8sScheduler(
             namespace=args.k8s_namespace,
+            kubeconfig=args.k8s_kubeconfig,
+            context=args.k8s_context,
             pvc_name=args.k8s_pvc,
             host_output_dir=args.k8s_host_output_dir,
             node_selector=node_sel,
@@ -213,6 +247,10 @@ def _build_scheduler(args: argparse.Namespace):
         return SlurmScheduler(
             partition=args.slurm_partition,
             time_limit=args.slurm_time,
+            rest_url=args.slurm_rest_url,
+            jwt_token=args.slurm_jwt_token,
+            api_version=args.slurm_api_version,
+            verify_ssl=not args.slurm_no_verify_ssl,
             account=args.slurm_account,
             constraint=args.slurm_constraint,
             container_runtime=args.slurm_container_runtime,

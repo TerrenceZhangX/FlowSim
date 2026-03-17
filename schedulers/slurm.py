@@ -1,12 +1,21 @@
-"""Slurm sbatch scheduler for FlowSim profiling."""
+"""Slurm sbatch scheduler for FlowSim profiling.
+
+``render()`` / ``dry_run()`` produce a standalone bash script (zero deps).
+``submit()`` posts the script to a slurmrestd endpoint via stdlib
+``urllib.request`` — no extra packages needed.
+"""
 
 from __future__ import annotations
 
-import subprocess
-import tempfile
-import textwrap
+import json
+import ssl
+import urllib.error
+import urllib.request
 
 from schedulers.base import BaseScheduler, ProfileJobSpec
+
+
+_DEFAULT_API_VERSION = "v0.0.40"
 
 
 class SlurmScheduler(BaseScheduler):
@@ -18,6 +27,17 @@ class SlurmScheduler(BaseScheduler):
         Slurm partition to submit to.
     time_limit : str
         Wall-clock time limit (e.g., ``"01:00:00"``).
+    rest_url : str
+        Base URL of the slurmrestd daemon
+        (e.g., ``"https://slurm.example.com:6820"``).
+        Required only for ``submit()``.
+    jwt_token : str
+        JWT/auth token for slurmrestd.  Required only for ``submit()``.
+    api_version : str
+        slurmrestd OpenAPI version (default: ``"v0.0.40"``).
+        Adjust to match your cluster (``v0.0.39``, ``v0.0.41``, …).
+    verify_ssl : bool
+        Whether to verify the slurmrestd TLS certificate (default True).
     account : str, optional
         ``--account`` for which allocation to charge.
     constraint : str, optional
@@ -42,6 +62,10 @@ class SlurmScheduler(BaseScheduler):
         *,
         partition: str = "gpu",
         time_limit: str = "02:00:00",
+        rest_url: str = "",
+        jwt_token: str = "",
+        api_version: str = _DEFAULT_API_VERSION,
+        verify_ssl: bool = True,
         account: str = "",
         constraint: str = "",
         container_runtime: str = "none",
@@ -51,6 +75,10 @@ class SlurmScheduler(BaseScheduler):
     ) -> None:
         self.partition = partition
         self.time_limit = time_limit
+        self.rest_url = rest_url.rstrip("/")
+        self.jwt_token = jwt_token
+        self.api_version = api_version
+        self.verify_ssl = verify_ssl
         self.account = account
         self.constraint = constraint
         self.container_runtime = container_runtime
@@ -123,19 +151,86 @@ class SlurmScheduler(BaseScheduler):
         return "\n".join(lines)
 
     def submit(self, spec: ProfileJobSpec) -> str:
-        script = self.render(spec)
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".sh", delete=False
-        ) as f:
-            f.write(script)
-            f.flush()
-            result = subprocess.run(
-                ["sbatch", f.name],
-                capture_output=True,
-                text=True,
+        """Submit the job via slurmrestd REST API.
+
+        Requires ``rest_url`` and ``jwt_token`` to be set.
+        Uses only ``urllib.request`` from the standard library.
+        """
+        if not self.rest_url:
+            raise RuntimeError(
+                "--slurm-rest-url is required for --submit. "
+                "Point it at your slurmrestd endpoint "
+                "(e.g. https://slurm.example.com:6820)."
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"sbatch failed:\n{result.stderr.strip()}"
-                )
-            return result.stdout.strip()
+        if not self.jwt_token:
+            raise RuntimeError(
+                "--slurm-jwt-token is required for --submit. "
+                "Generate one via: scontrol token lifespan=3600"
+            )
+
+        script = self.render(spec)
+        job_name = spec.default_job_name()
+
+        url = (
+            f"{self.rest_url}/slurm/{self.api_version}/job/submit"
+        )
+
+        # slurmrestd job submission payload
+        payload = {
+            "script": script,
+            "job": {
+                "name": job_name,
+                "partition": self.partition,
+                "time_limit": {"number": self._parse_time_minutes(), "set": True},
+                "tasks": 1,
+                "current_working_directory": "/flowsim",
+                "environment": ["PATH=/usr/local/bin:/usr/bin:/bin"],
+            },
+        }
+        if self.account:
+            payload["job"]["account"] = self.account
+
+        data = json.dumps(payload).encode()
+        headers = {
+            "Content-Type": "application/json",
+            "X-SLURM-USER-TOKEN": self.jwt_token,
+        }
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+        ctx: ssl.SSLContext | None = None
+        if not self.verify_ssl:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+        try:
+            with urllib.request.urlopen(req, context=ctx) as resp:
+                body = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            raise RuntimeError(
+                f"slurmrestd returned HTTP {exc.code}:\n{detail}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Cannot reach slurmrestd at {self.rest_url}: {exc.reason}"
+            ) from exc
+
+        # Response contains job_id on success, errors array on failure
+        errors = body.get("errors") or []
+        if errors:
+            msgs = "; ".join(e.get("error", str(e)) for e in errors)
+            raise RuntimeError(f"slurmrestd job submit failed: {msgs}")
+
+        job_id = body.get("job_id", "unknown")
+        return f"Submitted batch job {job_id}"
+
+    def _parse_time_minutes(self) -> int:
+        """Convert HH:MM:SS time_limit to total minutes."""
+        parts = self.time_limit.split(":")
+        if len(parts) == 3:
+            h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
+            return h * 60 + m + (1 if s > 0 else 0)
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(parts[0])

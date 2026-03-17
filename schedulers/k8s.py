@@ -1,11 +1,28 @@
-"""Kubernetes Job scheduler for FlowSim profiling."""
+"""Kubernetes Job scheduler for FlowSim profiling.
+
+Uses the ``kubernetes`` Python client for remote submission.
+The ``render()`` / ``dry_run()`` path uses stdlib only (json fallback if
+PyYAML is not installed — JSON is valid YAML 1.2 and ``kubectl`` accepts it).
+"""
 
 from __future__ import annotations
 
-import subprocess
-import tempfile
+import json
 
 from schedulers.base import BaseScheduler, ProfileJobSpec
+
+# Optional: nicer YAML output for dry-run.
+try:
+    import yaml as _yaml  # type: ignore[import-untyped]
+
+    def _dump(obj: dict) -> str:
+        return _yaml.safe_dump(obj, default_flow_style=False, sort_keys=False)
+
+except ImportError:
+    _yaml = None  # type: ignore[assignment]
+
+    def _dump(obj: dict) -> str:  # type: ignore[misc]
+        return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
 
 
 class K8sScheduler(BaseScheduler):
@@ -15,6 +32,11 @@ class K8sScheduler(BaseScheduler):
     ----------
     namespace : str
         Kubernetes namespace for the Job.
+    kubeconfig : str, optional
+        Path to a kubeconfig file.  When empty, the ``kubernetes`` client
+        tries in-cluster config, then ``~/.kube/config``.
+    context : str, optional
+        kubeconfig context to activate.
     pvc_name : str, optional
         Name of a PersistentVolumeClaim to mount for trace output.
         If empty, uses ``emptyDir`` (traces are lost when the pod exits).
@@ -33,6 +55,8 @@ class K8sScheduler(BaseScheduler):
         self,
         *,
         namespace: str = "default",
+        kubeconfig: str = "",
+        context: str = "",
         pvc_name: str = "",
         host_output_dir: str = "",
         node_selector: dict[str, str] | None = None,
@@ -40,6 +64,8 @@ class K8sScheduler(BaseScheduler):
         shm_size: str = "16Gi",
     ) -> None:
         self.namespace = namespace
+        self.kubeconfig = kubeconfig
+        self.context = context
         self.pvc_name = pvc_name
         self.host_output_dir = host_output_dir
         self.node_selector = node_selector or {}
@@ -47,94 +73,96 @@ class K8sScheduler(BaseScheduler):
         self.shm_size = shm_size
 
     def render(self, spec: ProfileJobSpec) -> str:
-        job_name = spec.default_job_name()[:63]  # K8s name limit
+        return _dump(self._build_job_dict(spec))
+
+    # -----------------------------------------------------------------
+    # Build a plain-dict manifest (used by both render and submit)
+    # -----------------------------------------------------------------
+    def _build_job_dict(self, spec: ProfileJobSpec) -> dict:
+        """Return the Job manifest as a nested Python dict."""
+        job_name = spec.default_job_name()[:63]
         cmd = spec.build_profile_command()
 
-        lines: list[str] = []
-        _a = lines.append
-
-        _a("apiVersion: batch/v1")
-        _a("kind: Job")
-        _a("metadata:")
-        _a(f"  name: {job_name}")
-        _a(f"  namespace: {self.namespace}")
-        _a("  labels:")
-        _a("    app: flowsim")
-        _a("    component: profiling")
-        _a(f"    collect: {spec.collect}")
-        _a("spec:")
-        _a("  backoffLimit: 0")
-        _a("  ttlSecondsAfterFinished: 86400")
-        _a("  template:")
-        _a("    metadata:")
-        _a("      labels:")
-        _a("        app: flowsim")
-        _a("        component: profiling")
-        _a("    spec:")
-        if self.service_account:
-            _a(f"      serviceAccountName: {self.service_account}")
-        if self.node_selector:
-            _a("      nodeSelector:")
-            for k, v in self.node_selector.items():
-                _a(f"        {k}: {v}")
-        _a("      restartPolicy: Never")
-        _a("      containers:")
-        _a("        - name: profiler")
-        _a(f"          image: {spec.image}")
-        _a("          imagePullPolicy: IfNotPresent")
-        _a("          workingDir: /flowsim")
-        _a("          command:")
-        for c in cmd:
-            _a(f'            - "{c}"')
-        _a("          env:")
-        _a("            - name: SGLANG_PROFILE_KERNELS")
-        _a('              value: "1"')
-        _a("          resources:")
-        _a("            limits:")
-        _a(f'              nvidia.com/gpu: "{spec.gpus}"')
-        _a("            requests:")
-        _a(f'              nvidia.com/gpu: "{spec.gpus}"')
-
-        # volumeMounts
-        _a("          volumeMounts:")
-        _a("            - name: dshm")
-        _a("              mountPath: /dev/shm")
-        if self.pvc_name or self.host_output_dir:
-            _a("            - name: output")
-            _a(f"              mountPath: {spec.output_dir}")
-
-        # volumes
-        _a("      volumes:")
-        _a("        - name: dshm")
-        _a("          emptyDir:")
-        _a("            medium: Memory")
-        _a(f"            sizeLimit: {self.shm_size}")
+        # volumes + mounts
+        volume_mounts = [{"name": "dshm", "mountPath": "/dev/shm"}]
+        volumes: list[dict] = [
+            {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": self.shm_size}},
+        ]
         if self.pvc_name:
-            _a("        - name: output")
-            _a("          persistentVolumeClaim:")
-            _a(f"            claimName: {self.pvc_name}")
+            volume_mounts.append({"name": "output", "mountPath": spec.output_dir})
+            volumes.append({"name": "output", "persistentVolumeClaim": {"claimName": self.pvc_name}})
         elif self.host_output_dir:
-            _a("        - name: output")
-            _a("          hostPath:")
-            _a(f"            path: {self.host_output_dir}")
-            _a("            type: DirectoryOrCreate")
+            volume_mounts.append({"name": "output", "mountPath": spec.output_dir})
+            volumes.append({"name": "output", "hostPath": {"path": self.host_output_dir, "type": "DirectoryOrCreate"}})
 
-        return "\n".join(lines) + "\n"
+        container = {
+            "name": "profiler",
+            "image": spec.image,
+            "imagePullPolicy": "IfNotPresent",
+            "workingDir": "/flowsim",
+            "command": cmd,
+            "env": [{"name": "SGLANG_PROFILE_KERNELS", "value": "1"}],
+            "resources": {
+                "limits": {"nvidia.com/gpu": str(spec.gpus)},
+                "requests": {"nvidia.com/gpu": str(spec.gpus)},
+            },
+            "volumeMounts": volume_mounts,
+        }
+
+        pod_spec: dict = {
+            "restartPolicy": "Never",
+            "containers": [container],
+            "volumes": volumes,
+        }
+        if self.service_account:
+            pod_spec["serviceAccountName"] = self.service_account
+        if self.node_selector:
+            pod_spec["nodeSelector"] = dict(self.node_selector)
+
+        return {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": job_name,
+                "namespace": self.namespace,
+                "labels": {"app": "flowsim", "component": "profiling", "collect": spec.collect},
+            },
+            "spec": {
+                "backoffLimit": 0,
+                "ttlSecondsAfterFinished": 86400,
+                "template": {
+                    "metadata": {"labels": {"app": "flowsim", "component": "profiling"}},
+                    "spec": pod_spec,
+                },
+            },
+        }
 
     def submit(self, spec: ProfileJobSpec) -> str:
-        manifest = self.render(spec)
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
-            f.write(manifest)
-            f.flush()
-            result = subprocess.run(
-                ["kubectl", "apply", "-f", f.name],
-                capture_output=True,
-                text=True,
+        """Submit via the ``kubernetes`` Python client (``pip install kubernetes``)."""
+        try:
+            from kubernetes import client as k8s_client, config as k8s_config
+        except ImportError:
+            raise RuntimeError(
+                "The 'kubernetes' package is required for --submit. "
+                "Install it with: pip install kubernetes"
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"kubectl apply failed:\n{result.stderr.strip()}"
-                )
-            return result.stdout.strip()
+
+        # Load kubeconfig / in-cluster config
+        config_kwargs: dict = {}
+        if self.kubeconfig:
+            config_kwargs["config_file"] = self.kubeconfig
+        if self.context:
+            config_kwargs["context"] = self.context
+
+        try:
+            k8s_config.load_kube_config(**config_kwargs)
+        except k8s_config.ConfigException:
+            k8s_config.load_incluster_config()
+
+        body = self._build_job_dict(spec)
+        batch_api = k8s_client.BatchV1Api()
+        resp = batch_api.create_namespaced_job(
+            namespace=self.namespace,
+            body=body,
+        )
+        return f"job.batch/{resp.metadata.name} created (namespace={resp.metadata.namespace})"
