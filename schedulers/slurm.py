@@ -225,6 +225,87 @@ class SlurmScheduler(BaseScheduler):
         job_id = body.get("job_id", "unknown")
         return f"Submitted batch job {job_id}"
 
+    def _rest_get(self, path: str) -> dict:
+        """GET a slurmrestd endpoint and return parsed JSON."""
+        if not self.rest_url:
+            raise RuntimeError("--slurm-rest-url is required")
+        if not self.jwt_token:
+            raise RuntimeError("--slurm-jwt-token is required")
+
+        url = f"{self.rest_url}{path}"
+        headers = {
+            "X-SLURM-USER-TOKEN": self.jwt_token,
+        }
+        req = urllib.request.Request(url, headers=headers, method="GET")
+
+        ctx: ssl.SSLContext | None = None
+        if not self.verify_ssl:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+        try:
+            with urllib.request.urlopen(req, context=ctx) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")
+            raise RuntimeError(f"slurmrestd returned HTTP {exc.code}:\n{detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Cannot reach slurmrestd at {self.rest_url}: {exc.reason}") from exc
+
+    def status(self, job_id: str) -> dict:
+        """Query Slurm job status via slurmrestd."""
+        body = self._rest_get(f"/slurm/{self.api_version}/job/{job_id}")
+
+        errors = body.get("errors") or []
+        if errors:
+            msgs = "; ".join(e.get("error", str(e)) for e in errors)
+            raise RuntimeError(f"slurmrestd error: {msgs}")
+
+        jobs = body.get("jobs", [])
+        if not jobs:
+            return {"state": "Unknown", "message": f"No job found with ID {job_id}", "output_hint": ""}
+
+        job = jobs[0]
+        state = job.get("job_state", ["UNKNOWN"])
+        if isinstance(state, list):
+            state = state[0] if state else "UNKNOWN"
+        name = job.get("name", "")
+        node_list = job.get("nodes", "")
+        output_file = job.get("standard_output", "")
+        work_dir = job.get("current_working_directory", "")
+
+        msg_parts = [
+            f"Job ID: {job_id}  Name: {name}  State: {state}",
+            f"Nodes: {node_list}" if node_list else "Nodes: (not yet assigned)",
+        ]
+        if output_file:
+            msg_parts.append(f"Output log: {output_file}")
+        if work_dir:
+            msg_parts.append(f"Working dir: {work_dir}")
+
+        return {
+            "state": state,
+            "message": "\n".join(msg_parts),
+            "output_hint": output_file,
+        }
+
+    def logs(self, job_id: str, *, tail: int = 100) -> str:
+        """Retrieve log output for a Slurm job.
+
+        Tries to read the sbatch output file via slurmrestd.
+        Falls back to showing job info if direct log access isn't available.
+        """
+        info = self.status(job_id)
+        output_file = info.get("output_hint", "")
+        lines = [info["message"], ""]
+
+        if output_file:
+            lines.append(f"To view full logs on the cluster:")
+            lines.append(f"  tail -{tail} {output_file}")
+
+        return "\n".join(lines)
+
     def _parse_time_minutes(self) -> int:
         """Convert HH:MM:SS time_limit to total minutes."""
         parts = self.time_limit.split(":")

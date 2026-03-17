@@ -176,3 +176,106 @@ class K8sScheduler(BaseScheduler):
             body=body,
         )
         return f"job.batch/{resp.metadata.name} created (namespace={resp.metadata.namespace})"
+
+    # -----------------------------------------------------------------
+    # Helpers shared by status / logs
+    # -----------------------------------------------------------------
+
+    def _load_k8s(self):
+        """Load kubeconfig and return (BatchV1Api, CoreV1Api)."""
+        from kubernetes import client as k8s_client, config as k8s_config
+
+        config_kwargs: dict = {}
+        if self.kubeconfig:
+            config_kwargs["config_file"] = self.kubeconfig
+        if self.context:
+            config_kwargs["context"] = self.context
+        try:
+            k8s_config.load_kube_config(**config_kwargs)
+        except k8s_config.ConfigException:
+            k8s_config.load_incluster_config()
+
+        return k8s_client.BatchV1Api(), k8s_client.CoreV1Api()
+
+    def status(self, job_id: str) -> dict:
+        """Query K8s Job status by job name."""
+        try:
+            from kubernetes import client as k8s_client
+        except ImportError:
+            raise RuntimeError("pip install kubernetes")
+
+        batch_api, core_api = self._load_k8s()
+
+        job = batch_api.read_namespaced_job(name=job_id, namespace=self.namespace)
+        st = job.status
+
+        # Determine state
+        if st.succeeded and st.succeeded > 0:
+            state = "Succeeded"
+        elif st.failed and st.failed > 0:
+            state = "Failed"
+        elif st.active and st.active > 0:
+            state = "Running"
+        else:
+            state = "Pending"
+
+        # Pod info
+        pods = core_api.list_namespaced_pod(
+            namespace=self.namespace,
+            label_selector=f"job-name={job_id}",
+        )
+        pod_statuses = []
+        for pod in pods.items:
+            phase = pod.status.phase
+            node = pod.spec.node_name or "unscheduled"
+            pod_statuses.append(f"{pod.metadata.name} ({phase}, node={node})")
+
+        output_hint = ""
+        if self.pvc_name:
+            output_hint = f"Traces persisted on PVC '{self.pvc_name}'"
+        elif self.host_output_dir:
+            output_hint = f"Traces at hostPath {self.host_output_dir} on the scheduled node"
+        else:
+            output_hint = "WARNING: no PVC or hostPath configured — traces are lost when pod exits"
+
+        msg_parts = [f"Job: {job_id}  Namespace: {self.namespace}  State: {state}"]
+        if pod_statuses:
+            msg_parts.append("Pods: " + ", ".join(pod_statuses))
+        msg_parts.append(output_hint)
+
+        return {
+            "state": state,
+            "message": "\n".join(msg_parts),
+            "output_hint": output_hint,
+        }
+
+    def logs(self, job_id: str, *, tail: int = 100) -> str:
+        """Retrieve logs from the pod(s) of a K8s Job."""
+        try:
+            from kubernetes import client as k8s_client
+        except ImportError:
+            raise RuntimeError("pip install kubernetes")
+
+        _, core_api = self._load_k8s()
+
+        pods = core_api.list_namespaced_pod(
+            namespace=self.namespace,
+            label_selector=f"job-name={job_id}",
+        )
+        if not pods.items:
+            return f"No pods found for job {job_id} in namespace {self.namespace}"
+
+        parts = []
+        for pod in pods.items:
+            name = pod.metadata.name
+            try:
+                log_text = core_api.read_namespaced_pod_log(
+                    name=name,
+                    namespace=self.namespace,
+                    tail_lines=tail,
+                )
+            except Exception as exc:
+                log_text = f"(error reading logs: {exc})"
+            parts.append(f"=== {name} ===\n{log_text}")
+
+        return "\n".join(parts)

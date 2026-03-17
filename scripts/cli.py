@@ -152,6 +152,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Submit a profiling job to K8s or Slurm",
         add_help=False,
     )
+    sub.add_parser(
+        "status",
+        help="Query job status (local/k8s/slurm)",
+        add_help=False,
+    )
+    sub.add_parser(
+        "logs",
+        help="Retrieve job logs (local/k8s/slurm)",
+        add_help=False,
+    )
 
     args, remaining = parser.parse_known_args(argv)
 
@@ -162,6 +172,18 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.submit_profile import main as submit_main
 
         submit_main(remaining)
+        return 0
+
+    if args.command == "status":
+        from scripts.status_profile import main_status
+
+        main_status(remaining)
+        return 0
+
+    if args.command == "logs":
+        from scripts.status_profile import main_logs
+
+        main_logs(remaining)
         return 0
 
     parser.print_help()

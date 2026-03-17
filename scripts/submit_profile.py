@@ -114,10 +114,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     infra.add_argument("--host", default="0.0.0.0")
     infra.add_argument("--port", type=int, default=30001)
-    infra.add_argument("--output-dir", default="/flowsim/stage_traces")
-    infra.add_argument(
-        "--log-dir", default="/flowsim/tests/test-artifacts",
-    )
+    infra.add_argument("--output-dir", default="")
     infra.add_argument("--job-name", default="")
 
     # -- Local options --
@@ -300,7 +297,6 @@ def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:
         host=args.host,
         port=args.port,
         output_dir=args.output_dir,
-        log_dir=args.log_dir,
         job_name=args.job_name,
         extra_server_opts=args.extra_server_opts,
         disagg_transfer_backend=args.disagg_transfer_backend,
@@ -353,6 +349,18 @@ def _build_scheduler(args: argparse.Namespace):
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
+    # Smart defaults for output_dir based on scheduler
+    if not args.output_dir:
+        if args.scheduler == "local":
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            args.output_dir = os.path.join(project_root, "stage_traces")
+        elif args.scheduler == "slurm":
+            # Slurm: default to ~/flowsim_traces (shared filesystem)
+            args.output_dir = os.path.expanduser("~/flowsim_traces")
+        else:
+            # K8s: container path (PVC/hostPath mounted here)
+            args.output_dir = "/flowsim/stage_traces"
+
     # Resolve Slurm JWT token from jwt_token_cmd in config if needed
     if args.scheduler == "slurm" and not args.slurm_jwt_token:
         slurm_cfg = load_slurm_config()
@@ -380,6 +388,22 @@ def main(argv: list[str] | None = None) -> None:
         else:
             result = scheduler.submit(spec)
         print(result)
+        # Tell user where to find results
+        print()
+        print(f"Traces: {spec.output_dir}")
+        print(f"Logs:   {spec.log_dir}")
+        if args.scheduler == "k8s":
+            if args.k8s_pvc:
+                print(f"  (persisted on PVC '{args.k8s_pvc}')")
+            else:
+                print(f"  (persisted at hostPath '{args.k8s_host_output_dir}' on the node)")
+            print(f"\nTo check status:  flowsim status --scheduler k8s --job {spec.default_job_name()[:63]}")
+            print(f"To view logs:     flowsim logs   --scheduler k8s --job {spec.default_job_name()[:63]}")
+        elif args.scheduler == "slurm":
+            print(f"  (on cluster shared filesystem)")
+            print(f"\nTo check status:  flowsim status --scheduler slurm --job <JOB_ID>")
+        else:
+            print(f"\nTo view logs:     flowsim logs   --scheduler local --job {spec.default_job_name()}")
 
 
 _INIT_HINT = "Run 'flowsim init' to create config files."
@@ -393,6 +417,20 @@ def _validate_connection(args: argparse.Namespace) -> None:
                 "Error: K8s namespace not set.\n"
                 "Set it in ~/.flowsim/k8s.yaml, FLOWSIM_K8S_NAMESPACE env var,\n"
                 f"or --k8s-namespace flag. {_INIT_HINT}"
+            )
+        # Traces + logs must survive pod termination
+        if not args.k8s_pvc and not args.k8s_host_output_dir:
+            sys.exit(
+                "Error: no persistent storage configured for K8s job output.\n"
+                "Traces and logs are written to output_dir inside the pod —\n"
+                "without a volume mount they are lost when the pod exits.\n\n"
+                "Set one of:\n"
+                "  --k8s-pvc <pvc-name>           (PersistentVolumeClaim)\n"
+                "  --k8s-host-output-dir <path>   (hostPath on the node)\n\n"
+                "Or configure in ~/.flowsim/k8s.yaml:\n"
+                "  pvc: my-traces-pvc\n"
+                "  # or\n"
+                "  host_output_dir: /data/flowsim-traces"
             )
         # kubeconfig is optional (in-cluster auto-discovery), but warn
         if not args.k8s_kubeconfig and not args.k8s_context:

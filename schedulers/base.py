@@ -35,7 +35,6 @@ class ProfileJobSpec:
     host: str = "0.0.0.0"
     port: int = 30001
     output_dir: str = "/flowsim/stage_traces"
-    log_dir: str = "/flowsim/tests/test-artifacts"
     job_name: str = ""
 
     # -- PD disaggregation --
@@ -69,6 +68,11 @@ class ProfileJobSpec:
         if self.extra_server_opts:
             parts.append(self.extra_server_opts)
         return " ".join(parts)
+
+    @property
+    def log_dir(self) -> str:
+        """Server logs go under ``{output_dir}/logs/``."""
+        return self.output_dir + "/logs"
 
     def build_profile_command(self) -> list[str]:
         """Build the full ``python scripts/run_stage_profile.py ...`` command."""
@@ -151,6 +155,31 @@ class BaseScheduler(abc.ABC):
     @abc.abstractmethod
     def submit(self, spec: ProfileJobSpec) -> str:
         """Submit the job and return a job identifier string."""
+
+    def status(self, job_id: str) -> dict:
+        """Query job status. Returns dict with at least 'state' key.
+
+        Subclasses should return::
+
+            {
+                "state": "Pending" | "Running" | "Succeeded" | "Failed" | ...,
+                "message": "human-readable detail",
+                "output_hint": "where to find trace files",
+            }
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support status queries")
+
+    def logs(self, job_id: str, *, tail: int = 100) -> str:
+        """Retrieve recent log output for a job.
+
+        Parameters
+        ----------
+        job_id : str
+            Job name (K8s) or job ID (Slurm) or log prefix (local).
+        tail : int
+            Number of lines from the end to return.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support log retrieval")
 
     def dry_run(self, spec: ProfileJobSpec) -> str:
         """Render and return the manifest without submitting."""

@@ -714,8 +714,8 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     )
     srv.add_argument(
         "--log-dir",
-        default="/flowsim/tests/test-artifacts",
-        help="Directory for server logs",
+        default="",
+        help="Directory for server logs (default: {output-dir}/logs/)",
     )
 
     return p.parse_args(argv)
@@ -872,6 +872,10 @@ def _write_summary(args, summary: list[dict]) -> None:
 
 def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
+
+    # Default log_dir to {output_dir}/logs/ if not specified
+    if not args.log_dir:
+        args.log_dir = os.path.join(args.output_dir, "logs")
 
     if args.decode_tokens < 2:
         print(
