@@ -291,20 +291,33 @@ class SlurmScheduler(BaseScheduler):
         }
 
     def logs(self, job_id: str, *, tail: int = 100) -> str:
-        """Retrieve log output for a Slurm job.
-
-        Tries to read the sbatch output file via slurmrestd.
-        Falls back to showing job info if direct log access isn't available.
-        """
+        """Show where Slurm job logs are and how to access them."""
         info = self.status(job_id)
         output_file = info.get("output_hint", "")
-        lines = [info["message"], ""]
+        state = info.get("state", "UNKNOWN")
+
+        parts = [info["message"], ""]
 
         if output_file:
-            lines.append(f"To view full logs on the cluster:")
-            lines.append(f"  tail -{tail} {output_file}")
+            parts.append(f"Log file (on cluster shared filesystem):")
+            parts.append(f"  {output_file}")
+            parts.append("")
+            parts.append("View on login node:")
+            parts.append(f"  less {output_file}")
+            parts.append(f"  tail -{tail} {output_file}")
+            parts.append("")
+            parts.append("Copy to local machine:")
+            parts.append(f"  scp <login-node>:{output_file} .")
+        else:
+            parts.append("No output file path found in job metadata.")
 
-        return "\n".join(lines)
+        # Trace files location
+        parts.append("")
+        parts.append("Trace files (on cluster shared filesystem):")
+        parts.append("  ~/flowsim_traces/")
+        parts.append("  ls ~/flowsim_traces/")
+
+        return "\n".join(parts)
 
     def _parse_time_minutes(self) -> int:
         """Convert HH:MM:SS time_limit to total minutes."""

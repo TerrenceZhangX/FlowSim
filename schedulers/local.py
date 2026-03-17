@@ -159,11 +159,7 @@ class LocalScheduler(BaseScheduler):
         }
 
     def logs(self, job_id: str, *, tail: int = 100) -> str:
-        """Show log files for a local job.
-
-        Lists all log files matching *job_id*, then prints the last
-        *tail* lines of the most recent stdout **and** stderr logs.
-        """
+        """List log files for a local job and print access commands."""
         import glob
 
         log_dir = os.path.join(self.workdir, "stage_traces", "logs")
@@ -171,24 +167,32 @@ class LocalScheduler(BaseScheduler):
         matches = sorted(glob.glob(pattern))
 
         if not matches:
-            return f"No logs found matching {pattern}"
+            # Also try wildcard — user may have given a partial name
+            pattern = os.path.join(log_dir, f"*{job_id}*")
+            matches = sorted(glob.glob(pattern))
 
-        parts = [f"Log files ({len(matches)}):"]
+        if not matches:
+            return f"No logs found in {log_dir} matching '{job_id}'"
+
+        parts = [f"Log directory: {log_dir}", ""]
+        parts.append(f"Files ({len(matches)}):")
         for p in matches:
             size = os.path.getsize(p)
-            parts.append(f"  {p}  ({size} bytes)")
-        parts.append("")
+            parts.append(f"  {os.path.basename(p)}  ({size:,} bytes)")
 
-        # Show tail of latest stdout + stderr
+        # Provide commands
+        parts.append("")
+        parts.append("View logs:")
         stdout_files = sorted(f for f in matches if f.endswith(".stdout.log"))
         stderr_files = sorted(f for f in matches if f.endswith(".stderr.log"))
+        if stdout_files:
+            parts.append(f"  less {stdout_files[-1]}")
+        if stderr_files:
+            parts.append(f"  less {stderr_files[-1]}")
 
-        for label, files in [("stdout", stdout_files), ("stderr", stderr_files)]:
-            if files:
-                latest = files[-1]
-                with open(latest) as fh:
-                    lines = fh.readlines()
-                parts.append(f"=== {latest} (last {tail} lines) ===")
-                parts.append("".join(lines[-tail:]))
+        trace_dir = os.path.join(self.workdir, "stage_traces")
+        parts.append("")
+        parts.append(f"Trace files: {trace_dir}")
+        parts.append(f"  ls {trace_dir}")
 
         return "\n".join(parts)

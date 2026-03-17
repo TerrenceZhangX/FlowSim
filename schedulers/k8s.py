@@ -250,13 +250,7 @@ class K8sScheduler(BaseScheduler):
         }
 
     def logs(self, job_id: str, *, tail: int = 100) -> str:
-        """Retrieve logs from the pod(s) of a K8s Job.
-
-        Shows the Pod stdout/stderr (profiling script output).
-        Server log files are persisted on the PVC/hostPath under
-        ``{output_dir}/logs/`` and can be accessed from the node
-        or another pod mounting the same volume.
-        """
+        """Show where logs are and how to access them for a K8s Job."""
         try:
             from kubernetes import client as k8s_client
         except ImportError:
@@ -271,23 +265,45 @@ class K8sScheduler(BaseScheduler):
         if not pods.items:
             return f"No pods found for job {job_id} in namespace {self.namespace}"
 
-        parts = []
+        parts: list[str] = []
+
+        # Pod info
         for pod in pods.items:
             name = pod.metadata.name
-            try:
-                log_text = core_api.read_namespaced_pod_log(
-                    name=name,
-                    namespace=self.namespace,
-                    tail_lines=tail,
-                )
-            except Exception as exc:
-                log_text = f"(error reading logs: {exc})"
-            parts.append(f"=== Pod: {name} (last {tail} lines) ===\n{log_text}")
+            phase = pod.status.phase
+            parts.append(f"Pod: {name}  ({phase})")
 
-        # Hint about persistent server logs
+        parts.append("")
+
+        # Commands to view pod stdout
+        parts.append("View profiling script output:")
+        for pod in pods.items:
+            name = pod.metadata.name
+            parts.append(f"  kubectl logs {name} -n {self.namespace}")
+            parts.append(f"  kubectl logs {name} -n {self.namespace} --tail={tail}")
+
+        parts.append("")
+
+        # Persistent log files
         if self.pvc_name:
-            parts.append(f"\nServer logs persisted on PVC '{self.pvc_name}' under {{output_dir}}/logs/")
+            parts.append(f"Server logs + traces persisted on PVC '{self.pvc_name}'.")
+            parts.append("Copy to local machine:")
+            for pod in pods.items:
+                name = pod.metadata.name
+                if pod.status.phase in ("Running", "Succeeded"):
+                    parts.append(f"  kubectl cp {self.namespace}/{name}:/flowsim/stage_traces ./stage_traces")
+                    break
+            else:
+                parts.append("  (pod not running — mount the PVC in another pod to retrieve files)")
         elif self.host_output_dir:
-            parts.append(f"\nServer logs at {self.host_output_dir}/logs/ on the scheduled node")
+            parts.append(f"Server logs + traces at hostPath on the node:")
+            parts.append(f"  {self.host_output_dir}/")
+            parts.append(f"  {self.host_output_dir}/logs/")
+            # Identify node
+            for pod in pods.items:
+                if pod.spec.node_name:
+                    parts.append(f"  Node: {pod.spec.node_name}")
+                    parts.append(f"  scp {pod.spec.node_name}:{self.host_output_dir}/ ./stage_traces/")
+                    break
 
         return "\n".join(parts)
