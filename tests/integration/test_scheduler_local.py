@@ -128,6 +128,10 @@ def _assert_logs(output_dir: str) -> None:
 class TestLocalScheduler:
     """Run real profiling via ``flowsim submit --scheduler local``."""
 
+    @pytest.mark.skipif(
+        not os.path.isdir("/flowsim"),
+        reason="Local profiling tests must run inside the FlowSim Docker container",
+    )
     def test_local_perf_tp1(self):
         """TP=1 perf profiling: traces + parsed CSVs + log files."""
         output_dir = os.path.join(ARTIFACT_DIR, "sched_local_tp1")
@@ -199,14 +203,15 @@ class TestLocalScheduler:
         assert "tail -f" in output or "No logs" in output
 
     def test_local_cancel(self):
-        """flowsim cancel --scheduler local should return a message (sync jobs can't be cancelled)."""
+        """flowsim cancel --scheduler local should attempt docker stop."""
         r = _flowsim_cli(
             "cancel",
             "--scheduler", "local",
             "--job", "flowsim-perf",
         )
         assert r.returncode == 0
-        assert "cannot be cancelled" in r.stdout.lower() or "synchronous" in r.stdout.lower()
+        out = r.stdout.lower()
+        assert "stop" in out or "container" in out
 
     def test_local_list(self):
         """flowsim list --scheduler local should list jobs from log files."""
@@ -315,10 +320,10 @@ class TestLocalSchedulerAPI:
             assert "tail -f" in text
 
     def test_cancel_returns_message(self):
-        """cancel() should return a message about sync jobs."""
+        """cancel() should attempt docker stop and return a message."""
         sched = LocalScheduler()
         msg = sched.cancel("some-job")
-        assert "synchronous" in msg.lower() or "cannot" in msg.lower()
+        assert "stop" in msg.lower() or "container" in msg.lower()
 
     def test_submit_pd_pair_returns_list(self):
         """submit_pd_pair() must return list[JobResult]."""

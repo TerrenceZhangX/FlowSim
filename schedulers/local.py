@@ -1,7 +1,8 @@
-"""Local scheduler — run profiling directly on this machine.
+"""Local scheduler — run profiling via Docker on the local machine.
 
-``render()`` returns the shell command string.
+``render()`` returns the ``docker run`` command string.
 ``submit()`` executes it as a subprocess, with stdout/stderr tee'd to log files.
+The profiling runs inside the FlowSim Docker image with GPU access.
 """
 
 from __future__ import annotations
@@ -14,17 +15,23 @@ import time
 from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
 
 
+def _shell_quote(s: str) -> str:
+    """Quote a string for safe embedding in a bash -c '...' invocation."""
+    import shlex
+    return shlex.quote(s)
+
+
 class LocalScheduler(BaseScheduler):
-    """Run profiling jobs locally via subprocess.
+    """Run profiling jobs locally inside a Docker container.
 
     Parameters
     ----------
     gpus : str
-        ``CUDA_VISIBLE_DEVICES`` value (e.g., ``"0"`` or ``"0,1"``).
-        Empty string means use all visible GPUs.
+        GPU device IDs for Docker ``--gpus`` (e.g., ``"0"`` or ``"0,1"``).
+        Empty string means all GPUs.
     workdir : str
-        Working directory for the subprocess.
-        Defaults to the FlowSim project root.
+        Host directory to use as the FlowSim project root for log scanning.
+        Defaults to the FlowSim project root on the host.
     """
 
     def __init__(
@@ -43,56 +50,83 @@ class LocalScheduler(BaseScheduler):
         # schedulers/ is one level below project root
         return os.path.dirname(d)
 
+    def _docker_gpu_flag(self) -> str:
+        """Build the ``--gpus`` flag for ``docker run``."""
+        if not self.gpus:
+            return "--gpus all"
+        return f"--gpus '\"device={self.gpus}\"'"
+
+    def _build_docker_cmd(self, spec: ProfileJobSpec) -> str:
+        """Build the full ``docker run`` command."""
+        job_name = spec.default_job_name()[:63]
+        # Container always works with /flowsim/stage_traces internally.
+        container_output = "/flowsim/stage_traces"
+        container_log_dir = container_output + "/logs"
+        host_output = os.path.abspath(spec.output_dir)
+        host_log_dir = host_output + "/logs"
+
+        # Build the inner command, then replace host paths with container paths.
+        inner_cmd = spec.build_shell_command()
+        inner_cmd = inner_cmd.replace(host_log_dir, container_log_dir)
+        inner_cmd = inner_cmd.replace(host_output, container_output)
+
+        parts = [
+            "docker run --rm",
+            f"--name {job_name}",
+            self._docker_gpu_flag(),
+            "--ipc=host --shm-size=16g",
+            "--network=host",
+            f"-e SGLANG_PROFILE_KERNELS=1",
+            f"-v {host_output}:{container_output}",
+            f"-w /flowsim",
+            spec.image,
+            f"bash -c {_shell_quote(inner_cmd)}",
+        ]
+        return " \\\n  ".join(parts)
+
     def render(self, spec: ProfileJobSpec) -> str:
-        lines = []
-        if self.gpus:
-            lines.append(f"export CUDA_VISIBLE_DEVICES={self.gpus}")
-        lines.append("export SGLANG_PROFILE_KERNELS=1")
-        lines.append(f"cd {self.workdir}")
-        lines.append(spec.build_shell_command())
-        return "\n".join(lines)
+        return self._build_docker_cmd(spec)
 
     def submit(self, spec: ProfileJobSpec) -> JobResult:
-        """Run the profiling command locally as a subprocess.
+        """Launch a Docker container for profiling.
 
         stdout and stderr are streamed to the terminal *and* saved to
-        log files under ``spec.log_dir``.
+        log files under ``spec.output_dir/logs/`` on the host.
         """
-        cmd = spec.build_shell_command()
-
-        env = os.environ.copy()
-        env["SGLANG_PROFILE_KERNELS"] = "1"
-        if self.gpus:
-            env["CUDA_VISIBLE_DEVICES"] = self.gpus
-
-        job_name = spec.default_job_name()
-        log_dir = spec.log_dir
+        # Ensure host output dir exists before mounting
+        host_output = os.path.abspath(spec.output_dir)
+        log_dir = os.path.join(host_output, "logs")
         os.makedirs(log_dir, exist_ok=True)
-        ts = int(time.time())
+
+        docker_cmd = self._build_docker_cmd(spec)
+        job_name = spec.default_job_name()
+        ts = time.strftime("%Y%m%d_%H%M%S")
+
+        # Remove stale container with the same name (e.g. from a killed run)
+        subprocess.run(
+            ["docker", "rm", "-f", job_name[:63]],
+            capture_output=True, timeout=10,
+        )
         stdout_path = os.path.join(log_dir, f"{job_name}_{ts}.stdout.log")
         stderr_path = os.path.join(log_dir, f"{job_name}_{ts}.stderr.log")
 
-        print(f"[local] Running {job_name}...")
-        print(f"[local] cmd: {cmd}")
-        print(f"[local] workdir: {self.workdir}")
-        if self.gpus:
-            print(f"[local] CUDA_VISIBLE_DEVICES={self.gpus}")
+        print(f"[local] Running {job_name} in Docker...")
+        print(f"[local] image: {spec.image}")
+        print(f"[local] gpus: {self.gpus or 'all'}")
+        print(f"[local] host output: {host_output}")
         print(f"[local] logs: {stdout_path}")
         print(f"[local]        {stderr_path}")
+        print(f"[local] cmd:\n  {docker_cmd}")
         print()
 
         with open(stdout_path, "w") as fout, open(stderr_path, "w") as ferr:
             proc = subprocess.Popen(
-                cmd,
+                docker_cmd,
                 shell=True,
                 cwd=self.workdir,
-                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            # Stream stdout/stderr to terminal + log files in real time.
-            # Use threads to avoid blocking on one stream while the other
-            # fills its OS pipe buffer.
             import threading
 
             def _tee(src, dest_file, dest_stream):
@@ -119,7 +153,7 @@ class LocalScheduler(BaseScheduler):
                 job_id=job_name,
                 scheduler="local",
                 state="Failed",
-                output_dir=spec.output_dir,
+                output_dir=host_output,
                 message=(
                     f"{job_name} FAILED (exit code {proc.returncode})\n"
                     f"stdout log: {stdout_path}\n"
@@ -130,7 +164,7 @@ class LocalScheduler(BaseScheduler):
             job_id=job_name,
             scheduler="local",
             state="Completed",
-            output_dir=spec.output_dir,
+            output_dir=host_output,
             message=(
                 f"{job_name} completed successfully\n"
                 f"stdout log: {stdout_path}\n"
@@ -139,8 +173,14 @@ class LocalScheduler(BaseScheduler):
         )
 
     def cancel(self, job_id: str) -> str:
-        """Local jobs run synchronously, so cancel is not applicable."""
-        return f"Local jobs run synchronously and cannot be cancelled. Job: {job_id}"
+        """Stop the Docker container for a local job."""
+        proc = subprocess.run(
+            ["docker", "stop", job_id],
+            capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode == 0:
+            return f"Stopped container {job_id}"
+        return f"Could not stop container {job_id}: {proc.stderr.strip()}"
 
     def status(self, job_id: str) -> dict:
         """Check local job status by looking for log files.
@@ -235,8 +275,9 @@ class LocalScheduler(BaseScheduler):
         jobs: list[dict] = []
         for path in matches:
             basename = os.path.basename(path)
-            # Parse: {job_name}_{timestamp}.stdout.log
-            m = re.match(r"^(.+)_(\d+)\.stdout\.log$", basename)
+            # Parse: {job_name}_{YYYYMMDD_HHMMSS}.stdout.log
+            # Also support old epoch format {job_name}_{digits}.stdout.log
+            m = re.match(r"^(.+)_(\d{8}_\d{6}|\d{10,})\.stdout\.log$", basename)
             if not m:
                 continue
             name = m.group(1)

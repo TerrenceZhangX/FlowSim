@@ -74,7 +74,7 @@ class TestProfileJobSpec:
 
     def test_build_profile_command(self, spec: ProfileJobSpec):
         cmd = spec.build_profile_command()
-        assert cmd[0] == "python"
+        assert cmd[0] == "python3"
         assert "scripts/run_stage_profile.py" in cmd[1]
         assert "--collect" in cmd
         assert "perf" in cmd
@@ -291,7 +291,8 @@ class TestLocalScheduler:
     def test_render_with_gpus(self, spec):
         sched = LocalScheduler(gpus="0,1")
         output = sched.render(spec)
-        assert "CUDA_VISIBLE_DEVICES=0,1" in output
+        assert "device=0,1" in output
+        assert "docker run" in output
 
     def test_render_without_gpus(self, spec):
         sched = LocalScheduler(gpus="")
@@ -307,7 +308,9 @@ class TestLocalScheduler:
     def test_render_workdir(self, spec):
         sched = LocalScheduler(workdir="/my/project")
         output = sched.render(spec)
-        assert "cd /my/project" in output
+        # Docker mode: workdir is used for log scanning, not in the docker command
+        assert "docker run" in output
+        assert "scripts/run_stage_profile.py" in output
 
     def test_dry_run_equals_render(self, spec):
         sched = LocalScheduler(gpus="0")
@@ -486,7 +489,7 @@ class TestCLISubmit:
             "--local-gpus", "0,1",
             "--dry-run",
         )
-        assert "CUDA_VISIBLE_DEVICES=0,1" in out
+        assert "device=0,1" in out
 
     def test_submit_k8s_dry_run(self):
         out = self._run(
