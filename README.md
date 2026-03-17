@@ -264,7 +264,7 @@ sweep_P1_tp4/
 └── ...
 ```
 
-After `--collect shapes`, each `parsed/TP-*-DECODE.csv` gains an `Input Dims` column with kernel tensor shapes.
+After `--collect shapes`, each `parsed/TP-*-DECODE.csv` gains a `Dims` column with kernel tensor shapes.
 
 ### Helper scripts
 

@@ -20,7 +20,7 @@ same deterministic kernel dispatch sequence regardless of CUDA-graph mode.
 
 Usage — Python API
 ------------------
-    from shape_merge import merge_shapes, merge_shapes_dir
+    from utils.shape_merge import merge_shapes, merge_shapes_dir
 
     # Single pair
     merge_shapes("timing.csv", "shape.csv", "merged.csv")
@@ -31,10 +31,10 @@ Usage — Python API
 Usage — CLI
 -----------
     # Single pair
-    python shape_merge.py --timing-csv timing.csv --shape-csv shape.csv -o merged.csv
+    python -m utils.shape_merge --timing-csv timing.csv --shape-csv shape.csv -o merged.csv
 
     # Directory
-    python shape_merge.py --timing-dir timing_parsed/ --shape-dir shape_parsed/ \\
+    python -m utils.shape_merge --timing-dir timing_parsed/ --shape-dir shape_parsed/ \\
                           --output-dir merged_parsed/
 """
 
@@ -203,6 +203,14 @@ def merge_shapes(
 
     # Write output
     os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
+
+    if not merged_rows:
+        # Empty timing CSV (header-only) — write header and return.
+        with open(output_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=_CSV_HEADER)
+            writer.writeheader()
+        return output_csv
+
     fieldnames = (
         _CSV_HEADER
         if set(_CSV_HEADER).issubset(merged_rows[0].keys())
@@ -267,10 +275,18 @@ def merge_shapes_dir(
     shape_index: dict[tuple[str, str], str] = {}
     for sc in shape_csvs:
         key = _rank_stage_key(sc)
-        if key is not None:
-            if stage and key[1] != stage.upper():
-                continue
-            shape_index[key] = sc
+        if key is None:
+            continue
+        if stage and key[1] != stage.upper():
+            continue
+        existing = shape_index.get(key)
+        if existing is not None and verbose:
+            print(
+                f"[shape_merge] Multiple shape CSVs for {key}: "
+                f"{os.path.basename(existing)}, {os.path.basename(sc)} "
+                f"→ using {os.path.basename(sc)}"
+            )
+        shape_index[key] = sc
 
     # Process timing CSVs
     timing_csvs = sorted(glob.glob(os.path.join(timing_dir, "*.csv")))

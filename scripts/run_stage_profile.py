@@ -175,13 +175,20 @@ def flush_cache(host: str, port: int) -> bool:
 
 
 def warmup(host: str, port: int, n: int, bs: int, ctx: int) -> None:
-    """Send *n* short requests to trigger CUDA graph capture before profiling."""
+    """Send *n* short requests to trigger CUDA graph capture before profiling.
+
+    Uses explicit ``input_ids`` with a deterministic pattern so warmup
+    shapes are well defined and independent of text tokenization.
+    """
     url = f"http://{host}:{port}/generate"
-    prompt = "Hello " * max(1, ctx // 2)
-    print(f"[warmup] Sending {n} warmup requests (bs={bs}, ctx≈{ctx}) …")
+    warmup_len = max(1, min(ctx, DEFAULT_MAX_PREFILL_TOKENS))
+    token_ids = _sample_token_ids(warmup_len)
+    print(
+        f"[warmup] Sending {n} warmup requests (bs={bs}, tokens={warmup_len}) …"
+    )
     for i in range(n):
         payload = {
-            "text": prompt,
+            "input_ids": token_ids,
             "sampling_params": {"max_new_tokens": 4, "temperature": 0},
         }
         try:
@@ -485,7 +492,7 @@ def parse_traces(trace_dir: str, parse_output_dir: str) -> None:
         env["PYTHONPATH"] = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..")
         )
-        subprocess.run(
+        result = subprocess.run(
             [
                 sys.executable,
                 script,
@@ -495,7 +502,14 @@ def parse_traces(trace_dir: str, parse_output_dir: str) -> None:
                 parse_output_dir,
             ],
             env=env,
+            capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            print(
+                f"[parse] FAILED for {os.path.basename(t)} "
+                f"(exit {result.returncode}):\n{result.stderr[-2000:]}"
+            )
 
 
 # ---------------------------------------------------------------------------

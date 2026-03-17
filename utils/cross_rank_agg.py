@@ -25,7 +25,7 @@ the correct methodology:
 
 Usage — Python API
 ------------------
-    from cross_rank_agg import aggregate, classify_kernel, print_result
+    from utils.cross_rank_agg import aggregate, classify_kernel, print_result
 
     result = aggregate("path/to/parsed_csvs/", stage="DECODE")
     print_result(result)
