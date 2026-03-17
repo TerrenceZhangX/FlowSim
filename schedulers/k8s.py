@@ -157,7 +157,17 @@ class K8sScheduler(BaseScheduler):
         try:
             k8s_config.load_kube_config(**config_kwargs)
         except k8s_config.ConfigException:
-            k8s_config.load_incluster_config()
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                hint = ""
+                if not self.kubeconfig:
+                    hint = " Try --k8s-kubeconfig /path/to/kubeconfig."
+                raise RuntimeError(
+                    "No valid Kubernetes configuration found. "
+                    "Checked kubeconfig file and in-cluster environment."
+                    + hint
+                )
 
         body = self._build_job_dict(spec)
         batch_api = k8s_client.BatchV1Api()

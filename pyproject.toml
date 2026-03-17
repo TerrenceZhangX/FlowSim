@@ -55,6 +55,14 @@ all = [
     "flowsim[k8s,sim,viz,api,dev]",
 ]
 
+[tool.setuptools.packages.find]
+include = [
+    "schedulers*",
+    "scripts*",
+    "simulator*",
+    "utils*",
+]
+
 [project.scripts]
 flowsim-submit = "scripts.submit_profile:main"
 

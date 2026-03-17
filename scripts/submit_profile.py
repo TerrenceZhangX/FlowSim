@@ -41,9 +41,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-# Allow running from the repo root as ``python scripts/submit_profile.py``
-sys.path.insert(0, ".")
-
 from schedulers.base import ProfileJobSpec
 from schedulers.k8s import K8sScheduler
 from schedulers.slurm import SlurmScheduler
