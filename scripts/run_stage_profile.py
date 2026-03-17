@@ -16,7 +16,7 @@ Request parameters
     A seed request populates the cache before profiling.  Set to 0
     for cold prefill (no cache hit).  Default: 0.
 ``--bs``
-    Batch size — number of concurrent requests sent in one profiling step.
+    Batch size — number of prompts included in one batched profiling request.
 ``--decode-tokens``
     Number of decode tokens to generate (and decode batches to profile).
     The profiler captures 1 EXTEND batch and ``decode_tokens`` DECODE
@@ -32,7 +32,7 @@ Workflow
 2. Send warmup requests so CUDA graphs are captured *before* profiling.
 3. (if existing_ctx > 0) Flush cache, send a seed request to populate KV cache.
 4. Call ``/start_profile`` with ``profile_by_stage=True``.
-5. Send *bs* concurrent inference requests.
+5. Send one batched inference request with batch size *bs*.
 6. The profiler automatically stops after 1 EXTEND + ``decode_tokens`` DECODE
    batches and writes both traces.  (Internally ``num_steps = decode_tokens - 1``
    because the profiler stop condition is ``count > target``.)
