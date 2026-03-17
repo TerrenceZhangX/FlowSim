@@ -253,6 +253,11 @@ def _build_scheduler(args: argparse.Namespace):
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     spec = _build_spec(args)
+
+    # Validate connection params before building the scheduler
+    if not args.dry_run:
+        _validate_connection(args)
+
     scheduler = _build_scheduler(args)
 
     if args.dry_run:
@@ -260,6 +265,32 @@ def main(argv: list[str] | None = None) -> None:
     else:
         result = scheduler.submit(spec)
         print(result)
+
+
+def _validate_connection(args: argparse.Namespace) -> None:
+    """Fail fast if required cluster connection params are missing."""
+    if args.scheduler == "k8s":
+        # kubernetes client can auto-discover from ~/.kube/config or
+        # in-cluster env, but warn if nothing explicit is given
+        if not args.k8s_kubeconfig and not args.k8s_context:
+            print(
+                "Note: no --k8s-kubeconfig or --k8s-context specified. "
+                "Will try ~/.kube/config and in-cluster auto-discovery.",
+                file=sys.stderr,
+            )
+    elif args.scheduler == "slurm":
+        missing = []
+        if not args.slurm_rest_url:
+            missing.append("--slurm-rest-url")
+        if not args.slurm_jwt_token:
+            missing.append("--slurm-jwt-token")
+        if missing:
+            sys.exit(
+                f"Error: {', '.join(missing)} required for Slurm submission.\n"
+                f"  --slurm-rest-url: slurmrestd endpoint "
+                f"(e.g. https://slurm.example.com:6820)\n"
+                f"  --slurm-jwt-token: generate via 'scontrol token lifespan=3600'"
+            )
 
 
 if __name__ == "__main__":
