@@ -1,0 +1,30 @@
+# FlowSim Slurm scheduler config
+#
+# Created by: flowsim init
+# Location:   ~/.flowsim/slurm.yaml
+#
+# Fill in the values below, then submit with:
+#   flowsim submit --scheduler slurm --collect perf --model-path ...
+#
+# CLI flags and env vars can override individual values.
+
+# REQUIRED — slurmrestd endpoint
+rest_url: ""                # e.g. https://slurm.corp.com:6820
+
+# REQUIRED — authentication (pick one)
+# jwt_token: ""             # not recommended — stored in plaintext
+jwt_token_cmd: ""           # e.g. "scontrol token lifespan=3600"
+
+# REQUIRED — cluster settings
+partition: ""               # e.g. gpu-h100
+account: ""                 # e.g. my-project
+
+# Optional
+api_version: "v0.0.40"
+time: "02:00:00"
+constraint: ""
+container_runtime: "none"   # docker | enroot | none
+container_mounts: ""
+# modules:
+#   - cuda/12.6
+#   - anaconda3

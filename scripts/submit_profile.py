@@ -43,11 +43,21 @@ import os
 import sys
 
 from schedulers.base import ProfileJobSpec
+from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_jwt_token
 from schedulers.k8s import K8sScheduler
 from schedulers.slurm import SlurmScheduler
 
 
+def _d(env_var: str, cfg: dict, key: str, fallback: str = "") -> str:
+    """Resolve default: env var > config file > fallback."""
+    return os.environ.get(env_var, "") or cfg_get(cfg, key, fallback)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # Load per-scheduler config files for defaults
+    k8s_cfg = load_k8s_config()
+    slurm_cfg = load_slurm_config()
+
     p = argparse.ArgumentParser(
         description="Submit FlowSim profiling jobs to K8s or Slurm.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -102,30 +112,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     infra.add_argument("--job-name", default="")
 
     # -- Kubernetes-specific --
-    k8s = p.add_argument_group("kubernetes options")
+    k8s = p.add_argument_group("kubernetes options (config: ~/.flowsim/k8s.yaml)")
     k8s.add_argument(
         "--k8s-namespace",
-        default=os.environ.get("FLOWSIM_K8S_NAMESPACE", "default"),
+        default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
         help="K8s namespace (env: FLOWSIM_K8S_NAMESPACE)",
     )
     k8s.add_argument(
         "--k8s-kubeconfig",
-        default=os.environ.get("KUBECONFIG", ""),
+        default=_d("KUBECONFIG", k8s_cfg, "kubeconfig", ""),
         help="Path to kubeconfig file (env: KUBECONFIG)",
     )
     k8s.add_argument(
         "--k8s-context",
-        default=os.environ.get("FLOWSIM_K8S_CONTEXT", ""),
-        help="kubeconfig context to use (env: FLOWSIM_K8S_CONTEXT)",
+        default=_d("FLOWSIM_K8S_CONTEXT", k8s_cfg, "context", ""),
+        help="kubeconfig context (env: FLOWSIM_K8S_CONTEXT)",
     )
     k8s.add_argument(
         "--k8s-pvc",
-        default="",
+        default=cfg_get(k8s_cfg, "pvc", ""),
         help="PVC name for output volume (omit for emptyDir)",
     )
     k8s.add_argument(
         "--k8s-host-output-dir",
-        default="",
+        default=cfg_get(k8s_cfg, "host_output_dir", ""),
         help="hostPath for output (used when --k8s-pvc is empty)",
     )
     k8s.add_argument(
@@ -135,34 +145,40 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="KEY=VALUE",
         help="Node selector labels (repeatable)",
     )
-    k8s.add_argument("--k8s-service-account", default="")
-    k8s.add_argument("--k8s-shm-size", default="16Gi")
+    k8s.add_argument(
+        "--k8s-service-account",
+        default=cfg_get(k8s_cfg, "service_account", ""),
+    )
+    k8s.add_argument(
+        "--k8s-shm-size",
+        default=cfg_get(k8s_cfg, "shm_size", "16Gi"),
+    )
 
     # -- Slurm-specific --
-    slurm = p.add_argument_group("slurm options")
+    slurm = p.add_argument_group("slurm options (config: ~/.flowsim/slurm.yaml)")
     slurm.add_argument(
         "--slurm-partition",
-        default=os.environ.get("FLOWSIM_SLURM_PARTITION", "gpu"),
+        default=_d("FLOWSIM_SLURM_PARTITION", slurm_cfg, "partition", ""),
         help="Slurm partition (env: FLOWSIM_SLURM_PARTITION)",
     )
     slurm.add_argument(
         "--slurm-time",
-        default=os.environ.get("FLOWSIM_SLURM_TIME", "02:00:00"),
+        default=_d("FLOWSIM_SLURM_TIME", slurm_cfg, "time", "02:00:00"),
         help="Wall time limit (env: FLOWSIM_SLURM_TIME)",
     )
     slurm.add_argument(
         "--slurm-rest-url",
-        default=os.environ.get("FLOWSIM_SLURM_REST_URL", ""),
+        default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
         help="slurmrestd base URL (env: FLOWSIM_SLURM_REST_URL)",
     )
     slurm.add_argument(
         "--slurm-jwt-token",
-        default=os.environ.get("FLOWSIM_SLURM_JWT_TOKEN", ""),
+        default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
         help="JWT token for slurmrestd (env: FLOWSIM_SLURM_JWT_TOKEN)",
     )
     slurm.add_argument(
         "--slurm-api-version",
-        default=os.environ.get("FLOWSIM_SLURM_API_VERSION", "v0.0.40"),
+        default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
         help="slurmrestd API version (env: FLOWSIM_SLURM_API_VERSION)",
     )
     slurm.add_argument(
@@ -170,19 +186,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip TLS certificate verification for slurmrestd",
     )
-    slurm.add_argument("--slurm-account", default="")
-    slurm.add_argument("--slurm-constraint", default="")
+    slurm.add_argument(
+        "--slurm-account",
+        default=cfg_get(slurm_cfg, "account", ""),
+    )
+    slurm.add_argument(
+        "--slurm-constraint",
+        default=cfg_get(slurm_cfg, "constraint", ""),
+    )
     slurm.add_argument(
         "--slurm-container-runtime",
         choices=["docker", "enroot", "none"],
-        default="none",
+        default=cfg_get(slurm_cfg, "container_runtime", "none"),
     )
-    slurm.add_argument("--slurm-container-mounts", default="")
+    slurm.add_argument(
+        "--slurm-container-mounts",
+        default=cfg_get(slurm_cfg, "container_mounts", ""),
+    )
+    # Modules from config (list) + CLI (append)
+    cfg_modules = slurm_cfg.get("modules") if isinstance(slurm_cfg.get("modules"), list) else []
     slurm.add_argument(
         "--slurm-module",
         action="append",
-        default=[],
-        help="Modules to load (repeatable)",
+        default=[str(m) for m in cfg_modules],
+        help="Modules to load (repeatable, merged with config)",
     )
     slurm.add_argument(
         "--slurm-extra-sbatch",
@@ -263,12 +290,19 @@ def _build_scheduler(args: argparse.Namespace):
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    spec = _build_spec(args)
 
-    # Validate connection params before building the scheduler
+    # Resolve Slurm JWT token from jwt_token_cmd in config if needed
+    if args.scheduler == "slurm" and not args.slurm_jwt_token:
+        slurm_cfg = load_slurm_config()
+        token = resolve_jwt_token(slurm_cfg)
+        if token:
+            args.slurm_jwt_token = token
+
+    # Validate required connection params before submit
     if not args.dry_run:
         _validate_connection(args)
 
+    spec = _build_spec(args)
     scheduler = _build_scheduler(args)
 
     if args.dry_run:
@@ -278,29 +312,39 @@ def main(argv: list[str] | None = None) -> None:
         print(result)
 
 
+_INIT_HINT = "Run 'flowsim init' to create config files."
+
+
 def _validate_connection(args: argparse.Namespace) -> None:
     """Fail fast if required cluster connection params are missing."""
     if args.scheduler == "k8s":
-        # kubernetes client can auto-discover from ~/.kube/config or
-        # in-cluster env, but warn if nothing explicit is given
+        if not args.k8s_namespace:
+            sys.exit(
+                "Error: K8s namespace not set.\n"
+                "Set it in ~/.flowsim/k8s.yaml, FLOWSIM_K8S_NAMESPACE env var,\n"
+                f"or --k8s-namespace flag. {_INIT_HINT}"
+            )
+        # kubeconfig is optional (in-cluster auto-discovery), but warn
         if not args.k8s_kubeconfig and not args.k8s_context:
             print(
-                "Note: no --k8s-kubeconfig or --k8s-context specified. "
+                "Note: no kubeconfig or context specified. "
                 "Will try ~/.kube/config and in-cluster auto-discovery.",
                 file=sys.stderr,
             )
     elif args.scheduler == "slurm":
         missing = []
         if not args.slurm_rest_url:
-            missing.append("--slurm-rest-url")
+            missing.append("rest_url (--slurm-rest-url)")
         if not args.slurm_jwt_token:
-            missing.append("--slurm-jwt-token")
+            missing.append("jwt_token/jwt_token_cmd (--slurm-jwt-token)")
+        if not args.slurm_partition:
+            missing.append("partition (--slurm-partition)")
         if missing:
             sys.exit(
-                f"Error: {', '.join(missing)} required for Slurm submission.\n"
-                f"  --slurm-rest-url: slurmrestd endpoint "
-                f"(e.g. https://slurm.example.com:6820)\n"
-                f"  --slurm-jwt-token: generate via 'scontrol token lifespan=3600'"
+                "Error: missing required Slurm config:\n"
+                + "\n".join(f"  - {m}" for m in missing)
+                + f"\n\nSet them in ~/.flowsim/slurm.yaml or via CLI flags.\n"
+                + _INIT_HINT
             )
 
 
