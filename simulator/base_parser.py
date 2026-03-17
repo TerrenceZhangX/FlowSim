@@ -496,7 +496,11 @@ class BaseKernelInfoParser:
                 # nccl's all_reduce kernel
                 shape = dims[0][0]
                 dtype = input_type[0]
-                size = shape[0] * shape[1] * pytorch_to_nccl_byte.get(dtype)
+                nccl_dtype = pytorch_to_nccl_dtype.get(dtype)
+                byte_size = pytorch_to_nccl_byte.get(dtype)
+                if nccl_dtype is None or byte_size is None:
+                    continue
+                size = shape[0] * shape[1] * byte_size
                 cache_key = (name, dtype, size)
                 if cache_key in comm_profile_cache:
                     profiled_duration = comm_profile_cache[cache_key]
@@ -511,9 +515,11 @@ class BaseKernelInfoParser:
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
-                        d=pytorch_to_nccl_dtype.get(dtype),
+                        d=nccl_dtype,
                     )
                     comm_profile_cache[cache_key] = profiled_duration
+                if profiled_duration is None:
+                    continue
                 self.individual_info[i] = (
                     name,
                     dims,
@@ -530,7 +536,11 @@ class BaseKernelInfoParser:
                 # Sglang's custom all_reduce kernel
                 shape = dims[1]
                 dtype = input_type[1]
-                size = shape[0] * shape[1] * pytorch_to_nccl_byte.get(dtype)
+                nccl_dtype = pytorch_to_nccl_dtype.get(dtype)
+                byte_size = pytorch_to_nccl_byte.get(dtype)
+                if nccl_dtype is None or byte_size is None:
+                    continue
+                size = shape[0] * shape[1] * byte_size
                 cache_key = (name, dtype, size)
                 if cache_key in comm_profile_cache:
                     profiled_duration = comm_profile_cache[cache_key]
@@ -540,9 +550,11 @@ class BaseKernelInfoParser:
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
-                        d=pytorch_to_nccl_dtype.get(dtype),
+                        d=nccl_dtype,
                     )
                     comm_profile_cache[cache_key] = profiled_duration
+                if profiled_duration is None:
+                    continue
                 self.individual_info[i] = (
                     name,
                     dims,
@@ -559,7 +571,11 @@ class BaseKernelInfoParser:
                 # nccl's all_gather kernel
                 shape = dims[0]
                 dtype = input_type[0]
-                size = shape[0] * shape[1] * pytorch_to_nccl_byte.get(dtype)
+                nccl_dtype = pytorch_to_nccl_dtype.get(dtype)
+                byte_size = pytorch_to_nccl_byte.get(dtype)
+                if nccl_dtype is None or byte_size is None:
+                    continue
+                size = shape[0] * shape[1] * byte_size
                 cache_key = (name, dtype, size)
                 if cache_key in comm_profile_cache:
                     profiled_duration = comm_profile_cache[cache_key]
@@ -569,9 +585,11 @@ class BaseKernelInfoParser:
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
-                        d=pytorch_to_nccl_dtype.get(dtype),
+                        d=nccl_dtype,
                     )
                     comm_profile_cache[cache_key] = profiled_duration
+                if profiled_duration is None:
+                    continue
                 self.individual_info[i] = (
                     name,
                     dims,

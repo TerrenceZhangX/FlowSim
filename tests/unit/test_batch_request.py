@@ -2,13 +2,12 @@ import asyncio
 import sys
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import MagicMock
 import importlib.util
 import pytest
 import os
 
-sys.path.insert(
-    0, os.path.abspath("/flowsim/workload/framework/sglang/python")
-)
+sys.path.insert(0, os.path.abspath("/flowsim/workload/framework/sglang/python"))
 
 import sglang.bench_serving as bs
 
@@ -29,7 +28,13 @@ class DummyTokenizer:
 def make_requests(n):
     return [
         SimpleNamespace(
-            prompt=f"prompt-{i}", prompt_len=10, output_len=5, image_data=None
+            prompt=f"prompt-{i}",
+            prompt_len=10,
+            output_len=5,
+            image_data=None,
+            text_prompt_len=10,
+            vision_prompt_len=0,
+            timestamp=0.0,
         )
         for i in range(n)
     ]
@@ -54,6 +59,15 @@ def _inject_min_args(**overrides):
     }
     base.update(overrides)
     bs.set_global_args(SimpleNamespace(**base))
+
+
+@pytest.fixture(autouse=True)
+def _mock_requests_get(monkeypatch):
+    """Prevent benchmark() from making real HTTP calls to get_server_info."""
+    fake_resp = MagicMock()
+    fake_resp.status_code = 404
+    fake_resp.json.return_value = {}
+    monkeypatch.setattr("requests.get", lambda *a, **kw: fake_resp)
 
 
 def test_batched_requests_single_call():
@@ -88,7 +102,7 @@ def test_batched_requests_single_call():
         bs.benchmark(
             backend="mock",
             api_url="http://fake/api",
-            base_url=None,
+            base_url="http://fake",
             model_id="mymodel",
             tokenizer=DummyTokenizer(),
             input_requests=input_requests,
@@ -96,6 +110,8 @@ def test_batched_requests_single_call():
             max_concurrency=None,
             disable_tqdm=True,
             lora_names=[],
+            lora_request_distribution=None,
+            lora_zipf_alpha=1.0,
             extra_request_body={},
             profile=False,
             pd_separated=False,
@@ -149,7 +165,7 @@ def test_non_batched_requests_multiple_calls():
         bs.benchmark(
             backend="mock",
             api_url="http://fake/api",
-            base_url=None,
+            base_url="http://fake",
             model_id="mymodel",
             tokenizer=DummyTokenizer(),
             input_requests=input_requests,
@@ -157,6 +173,8 @@ def test_non_batched_requests_multiple_calls():
             max_concurrency=None,
             disable_tqdm=True,
             lora_names=[],
+            lora_request_distribution=None,
+            lora_zipf_alpha=1.0,
             extra_request_body={},
             profile=False,
             pd_separated=False,

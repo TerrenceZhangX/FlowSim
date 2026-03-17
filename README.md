@@ -174,6 +174,115 @@ ls -lh /data/flowsim-simulate/     # Parsed CSV, summary, simulation artifacts
 
 ---
 
+## Stage Profiling (`run_stage_profile.py`)
+
+`scripts/run_stage_profile.py` is the single entry-point for **stage-separated** profiling: it captures prefill (EXTEND) and decode traces independently, parses them, runs cross-rank kernel analysis, and optionally collects kernel input shapes.
+
+### Quick reference
+
+Each profiling request produces **two** stage-separated traces:
+- **EXTEND** (prefill) — processes `input_len` new tokens (with optional `existing_ctx` tokens already in KV cache)
+- **DECODE** — profiler captures `decode-tokens` decode batch steps
+
+The profiler captures exactly **one** EXTEND batch and **decode-tokens** DECODE batches per run.
+
+| Flag | Description | Default |
+|---|---|---|
+| `--input-len` | Number of new prefill tokens per request (EXTEND) | 2048 |
+| `--existing-ctx` | Tokens already in KV cache from a prior request (0 = cold prefill) | 0 |
+| `--bs` | Batch size (concurrent requests) | 1 |
+| `--decode-tokens` | Number of decode tokens to generate (= number of decode batches profiled) | 32 |
+
+| Mode | What it does |
+|---|---|
+| `--collect perf` | Profile a single (bs, input_len, existing_ctx) point → trace (EXTEND + DECODE) → parse → cross-rank analysis |
+| `--collect shapes` | Re-run **without CUDA graph** to capture kernel input shapes, then merge into timing CSVs (both EXTEND and DECODE) |
+| `--collect all` | Both phases back-to-back (auto-restarts the server in between). Requires `--launch-server`. |
+
+`--collect` is required. Use `perf`, `shapes`, or `all`.
+
+### Examples
+
+**Cold prefill** (server already running):
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect perf \
+    --bs 1 --input-len 2048 --decode-tokens 32 \
+    --output-dir /workspace/traces \
+    --host 0.0.0.0 --port 30001
+```
+
+**With existing KV cache context:**
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect perf \
+    --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 32 \
+    --output-dir /workspace/traces \
+    --launch-server \
+    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+```
+
+**Collect shapes only** (requires a no-CUDA-graph server):
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect shapes \
+    --output-dir /workspace/sweep_P1_tp4 \
+    --launch-server \
+    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+```
+
+When `--collect shapes` is used with `--launch-server`, the server is automatically started with `--disable-cuda-graph --disable-cuda-graph-padding`.
+
+**Full pipeline** (perf → auto-restart → shapes → merge):
+
+```bash
+python3 scripts/run_stage_profile.py \
+    --collect all \
+    --output-dir /workspace/sweep_P1_tp4 \
+    --launch-server \
+    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+```
+
+
+### Output structure
+
+```
+sweep_P1_tp4/
+├── sweep_summary.json
+├── bs1_input2048_ctx0/
+│   ├── *-TP-*-EXTEND.trace.json.gz
+│   ├── *-TP-*-DECODE.trace.json.gz
+│   ├── parsed/
+│   │   ├── TP-0-EXTEND.csv
+│   │   ├── TP-0-DECODE.csv
+│   │   └── ...
+│   ├── analysis_extend.json
+│   └── analysis_decode.json
+└── ...
+```
+
+After `--collect shapes`, each `parsed/TP-*-DECODE.csv` gains a `Dims` column with kernel tensor shapes.
+
+### Helper scripts
+
+| Script | Purpose |
+|---|---|
+| `tests/integration/test_stage_profile_configs.py` | Integration tests for `--collect {perf,shapes,all}` across parallelism configs. Run with `pytest` inside Docker. Filter with `RUN_CONFIGS=P1`. |
+
+### Utilities (`utils/`)
+
+| File | Purpose |
+|---|---|
+| `utils/cross_rank_agg.py` | Cross-rank kernel aggregation (symmetric collectives → min, asymmetric → max, compute → mean) |
+| `utils/shape_merge.py` | Merge kernel shape data into timing CSVs |
+| `utils/net.py` | Shared networking helpers (`wait_for_port`) |
+| `utils/merge_trace.py` | Merge multi-rank traces into a single Perfetto-compatible file |
+
+---
+
 ## For Developers
 
 ### Customizing Profiling Workloads
