@@ -88,7 +88,7 @@ class ProfileJobSpec:
     def build_profile_command(self) -> list[str]:
         """Build the full ``python scripts/run_stage_profile.py ...`` command."""
         cmd = [
-            "python",
+            "python3",
             "scripts/run_stage_profile.py",
             "--collect",
             self.collect,
