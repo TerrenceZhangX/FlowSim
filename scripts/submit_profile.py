@@ -182,17 +182,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     # -- Action --
-    action = p.add_mutually_exclusive_group()
-    action.add_argument(
+    p.add_argument(
         "--dry-run",
         action="store_true",
-        default=True,
-        help="Print the rendered manifest to stdout (default)",
-    )
-    action.add_argument(
-        "--submit",
-        action="store_true",
-        help="Actually submit the job to the cluster",
+        help="Only print the rendered manifest; do not submit",
     )
 
     return p.parse_args(argv)
@@ -262,11 +255,11 @@ def main(argv: list[str] | None = None) -> None:
     spec = _build_spec(args)
     scheduler = _build_scheduler(args)
 
-    if args.submit:
+    if args.dry_run:
+        print(scheduler.dry_run(spec))
+    else:
         result = scheduler.submit(spec)
         print(result)
-    else:
-        print(scheduler.dry_run(spec))
 
 
 if __name__ == "__main__":
