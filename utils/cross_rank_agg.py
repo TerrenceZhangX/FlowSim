@@ -35,11 +35,11 @@ Usage — Python API
 
 Usage — CLI
 -----------
-    python cross_rank_agg.py --csv-dir parsed/ --stage DECODE
-    python cross_rank_agg.py --csv-dir parsed/ --stage DECODE --output-json analysis.json
+    python -m utils.cross_rank_agg --csv-dir parsed/ --stage DECODE
+    python -m utils.cross_rank_agg --csv-dir parsed/ --stage DECODE --output-json analysis.json
 
     # Exclude communication kernels (NCCL / custom allreduce) for compute-only timing
-    python cross_rank_agg.py --csv-dir parsed/ --stage EXTEND --compute-only
+    python -m utils.cross_rank_agg --csv-dir parsed/ --stage EXTEND --compute-only
 """
 
 from __future__ import annotations
@@ -60,6 +60,8 @@ _COMM_KEYWORDS = (
     "cross_device_reduce",
     "all_reduce",
     "all_gather",
+    "reduce_scatter",
+    "reducescatter",
     "ncclkernel",
     "nccldev",
     "alltoall",

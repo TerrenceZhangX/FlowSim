@@ -95,18 +95,18 @@ import sys
 import time
 from typing import Optional
 
-# Add utils/ to path for reusable modules
+# Add project root to path so utils package is importable
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_UTILS_DIR = os.path.join(os.path.dirname(_SCRIPT_DIR), "utils")
-if _UTILS_DIR not in sys.path:
-    sys.path.insert(0, _UTILS_DIR)
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
-from cross_rank_agg import (
+from utils.cross_rank_agg import (
     aggregate as analyze_traces_from_csvs,
     print_result as print_analysis,
 )
-from net import wait_for_port
-from shape_merge import merge_shapes_dir
+from utils.net import wait_for_port
+from utils.shape_merge import merge_shapes_dir
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -565,9 +565,10 @@ def collect_shapes(
         trace_dir = os.path.join(sweep_dir, tag, "shape_traces")
         parse_dir = os.path.join(sweep_dir, tag, "shape_parsed")
 
-        # Skip if already collected
-        existing = glob.glob(os.path.join(parse_dir, "*DECODE*.csv"))
-        if existing:
+        # Skip if shapes already collected for both stages
+        has_decode = glob.glob(os.path.join(parse_dir, "*DECODE*.csv"))
+        has_extend = glob.glob(os.path.join(parse_dir, "*EXTEND*.csv"))
+        if has_decode and has_extend:
             print(f"[{i+1}/{len(subdirs)}] {tag}: shape CSVs exist, skipping")
             results.append(parse_dir)
             continue
@@ -670,7 +671,7 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_DECODE_TOKENS,
         help=(
-            "Number of decode tokens to generate per request. "
+            "Number of decode tokens to generate per request (>= 2). "
             "Also controls how many decode batches the profiler captures."
         ),
     )
@@ -870,6 +871,15 @@ def _write_summary(args, summary: list[dict]) -> None:
 
 def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
+
+    if args.decode_tokens < 2:
+        print(
+            "[ERROR] --decode-tokens must be >= 2. "
+            "SGLang's profiler uses a count > target stop condition, "
+            "so decode_tokens=1 would capture 2 decode batches."
+        )
+        return 1
+
     server_proc = None
     summary: list[dict] = []
 
