@@ -39,6 +39,7 @@ Submit directly to cluster:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from schedulers.base import ProfileJobSpec
@@ -102,16 +103,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # -- Kubernetes-specific --
     k8s = p.add_argument_group("kubernetes options")
-    k8s.add_argument("--k8s-namespace", default="default")
+    k8s.add_argument(
+        "--k8s-namespace",
+        default=os.environ.get("FLOWSIM_K8S_NAMESPACE", "default"),
+        help="K8s namespace (env: FLOWSIM_K8S_NAMESPACE)",
+    )
     k8s.add_argument(
         "--k8s-kubeconfig",
-        default="",
-        help="Path to kubeconfig file (empty = default lookup)",
+        default=os.environ.get("KUBECONFIG", ""),
+        help="Path to kubeconfig file (env: KUBECONFIG)",
     )
     k8s.add_argument(
         "--k8s-context",
-        default="",
-        help="kubeconfig context to use",
+        default=os.environ.get("FLOWSIM_K8S_CONTEXT", ""),
+        help="kubeconfig context to use (env: FLOWSIM_K8S_CONTEXT)",
     )
     k8s.add_argument(
         "--k8s-pvc",
@@ -135,24 +140,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # -- Slurm-specific --
     slurm = p.add_argument_group("slurm options")
-    slurm.add_argument("--slurm-partition", default="gpu")
-    slurm.add_argument("--slurm-time", default="02:00:00")
+    slurm.add_argument(
+        "--slurm-partition",
+        default=os.environ.get("FLOWSIM_SLURM_PARTITION", "gpu"),
+        help="Slurm partition (env: FLOWSIM_SLURM_PARTITION)",
+    )
+    slurm.add_argument(
+        "--slurm-time",
+        default=os.environ.get("FLOWSIM_SLURM_TIME", "02:00:00"),
+        help="Wall time limit (env: FLOWSIM_SLURM_TIME)",
+    )
     slurm.add_argument(
         "--slurm-rest-url",
-        default="",
-        help="slurmrestd base URL (e.g. https://slurm.example.com:6820). "
-             "Required for --submit.",
+        default=os.environ.get("FLOWSIM_SLURM_REST_URL", ""),
+        help="slurmrestd base URL (env: FLOWSIM_SLURM_REST_URL)",
     )
     slurm.add_argument(
         "--slurm-jwt-token",
-        default="",
-        help="JWT token for slurmrestd auth. "
-             "Generate via: scontrol token lifespan=3600",
+        default=os.environ.get("FLOWSIM_SLURM_JWT_TOKEN", ""),
+        help="JWT token for slurmrestd (env: FLOWSIM_SLURM_JWT_TOKEN)",
     )
     slurm.add_argument(
         "--slurm-api-version",
-        default="v0.0.40",
-        help="slurmrestd OpenAPI version (default: v0.0.40)",
+        default=os.environ.get("FLOWSIM_SLURM_API_VERSION", "v0.0.40"),
+        help="slurmrestd API version (env: FLOWSIM_SLURM_API_VERSION)",
     )
     slurm.add_argument(
         "--slurm-no-verify-ssl",
