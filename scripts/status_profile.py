@@ -43,50 +43,53 @@ def _d(env_var: str, cfg: dict, key: str, fallback: str = "") -> str:
 
 
 def _add_scheduler_args(p: argparse.ArgumentParser) -> None:
-    """Add common scheduler connection args to a parser."""
-    k8s_cfg = load_k8s_config()
-    slurm_cfg = load_slurm_config()
-
+    """Add common scheduler choice arg (first pass only)."""
     p.add_argument(
         "--scheduler",
         choices=["local", "k8s", "slurm"],
         required=True,
     )
 
-    # -- Local options --
-    p.add_argument("--local-workdir", default="")
 
-    # -- K8s options --
-    p.add_argument(
-        "--k8s-namespace",
-        default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
-    )
-    p.add_argument(
-        "--k8s-kubeconfig",
-        default=_d("KUBECONFIG", k8s_cfg, "kubeconfig", ""),
-    )
-    p.add_argument(
-        "--k8s-context",
-        default=_d("FLOWSIM_K8S_CONTEXT", k8s_cfg, "context", ""),
-    )
+def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> None:
+    """Add only the args relevant to the chosen scheduler (second pass)."""
+    k8s_cfg = load_k8s_config()
+    slurm_cfg = load_slurm_config()
 
-    # -- Slurm options --
-    p.add_argument(
-        "--slurm-rest-url",
-        default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
-    )
-    p.add_argument(
-        "--slurm-jwt-token",
-        default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
-    )
-    p.add_argument(
-        "--slurm-api-version",
-        default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
-    )
-    p.add_argument(
-        "--slurm-no-verify-ssl",
-        action="store_true",
-    )
+    if scheduler == "local":
+        p.add_argument("--local-workdir", default="")
+
+    elif scheduler == "k8s":
+        p.add_argument(
+            "--k8s-namespace",
+            default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
+        )
+        p.add_argument(
+            "--k8s-kubeconfig",
+            default=_d("KUBECONFIG", k8s_cfg, "kubeconfig", ""),
+        )
+        p.add_argument(
+            "--k8s-context",
+            default=_d("FLOWSIM_K8S_CONTEXT", k8s_cfg, "context", ""),
+        )
+
+    elif scheduler == "slurm":
+        p.add_argument(
+            "--slurm-rest-url",
+            default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
+        )
+        p.add_argument(
+            "--slurm-jwt-token",
+            default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
+        )
+        p.add_argument(
+            "--slurm-api-version",
+            default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
+        )
+        p.add_argument(
+            "--slurm-no-verify-ssl",
+            action="store_true",
+        )
 
 
 def _resolve_slurm_jwt(args: argparse.Namespace) -> None:
@@ -100,7 +103,7 @@ def _resolve_slurm_jwt(args: argparse.Namespace) -> None:
 
 def _build_scheduler(args: argparse.Namespace):
     if args.scheduler == "local":
-        return LocalScheduler(workdir=args.local_workdir)
+        return LocalScheduler(workdir=getattr(args, "local_workdir", ""))
     elif args.scheduler == "k8s":
         return K8sScheduler(
             namespace=args.k8s_namespace,
@@ -116,11 +119,20 @@ def _build_scheduler(args: argparse.Namespace):
         )
 
 
+def _parse_two_pass(p: argparse.ArgumentParser, argv: list[str] | None = None) -> argparse.Namespace:
+    """Two-pass parse: peek --scheduler, add scheduler-specific args, full parse."""
+    _pre = argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--scheduler", choices=["local", "k8s", "slurm"])
+    pre, _ = _pre.parse_known_args(argv)
+    _add_scheduler_specific_args(p, pre.scheduler)
+    return p.parse_args(argv)
+
+
 def main_status(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Query FlowSim job status.")
     _add_scheduler_args(p)
     p.add_argument("--job", required=True, help="Job name or ID")
-    args = p.parse_args(argv)
+    args = _parse_two_pass(p, argv)
 
     _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
@@ -138,7 +150,7 @@ def main_logs(argv: list[str] | None = None) -> None:
     p.add_argument("--job", required=True, help="Job name or ID")
     p.add_argument("--tail", type=int, default=100, help="Number of log lines (default: 100)")
     p.add_argument("--follow", "-f", action="store_true", help="Follow log output")
-    args = p.parse_args(argv)
+    args = _parse_two_pass(p, argv)
 
     _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
@@ -154,7 +166,7 @@ def main_list(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="List FlowSim jobs.")
     _add_scheduler_args(p)
     p.add_argument("--status", default="", help="Filter by job state (e.g. Running, Succeeded, PENDING)")
-    args = p.parse_args(argv)
+    args = _parse_two_pass(p, argv)
 
     _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
@@ -180,7 +192,7 @@ def main_cancel(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Cancel a FlowSim job.")
     _add_scheduler_args(p)
     p.add_argument("--job", required=True, help="Job name or ID to cancel")
-    args = p.parse_args(argv)
+    args = _parse_two_pass(p, argv)
 
     _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)

@@ -1,11 +1,11 @@
-"""Integration tests for ``flowsim submit``, ``flowsim status``, ``flowsim logs``.
+"""Integration tests for the FlowSim scheduler CLI.
 
 Tests all three scheduler backends (local, k8s, slurm) end-to-end.
 
 * **local** — runs real TP=1 profiling and verifies traces, parsed CSVs,
-  and log files are all produced in the correct locations.
-* **k8s**   — submits a real Job to a Kind cluster, verifies it was created,
-  then checks ``flowsim status`` / ``flowsim logs`` output.  Also validates
+  log files, JobResult return, cancel, list, logs --follow.
+* **k8s**   — submits a real Job to a Kind cluster, verifies JobResult,
+  status, logs, list, cancel, logs --follow.  Also validates
   that dry-run YAML has the correct volume mounts and log paths.
 * **slurm** — dry-run only; verifies the sbatch script has the correct
   ``output_dir``, ``--log-dir``, and ``#SBATCH --output`` directives.
@@ -35,12 +35,16 @@ Usage
 """
 
 import glob
+import json
 import os
 import subprocess
 import sys
 import time
 
 import pytest
+
+from schedulers.base import JobResult, ProfileJobSpec
+from schedulers.local import LocalScheduler
 
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
@@ -182,6 +186,161 @@ class TestLocalScheduler:
         # Should contain file listing or "No logs" — not crash
         assert "Log directory:" in output or "No logs" in output
 
+    def test_local_logs_follow(self):
+        """flowsim logs --follow should show tail -f command."""
+        r = _flowsim_cli(
+            "logs",
+            "--scheduler", "local",
+            "--job", "flowsim-perf",
+            "--follow",
+        )
+        assert r.returncode == 0
+        output = r.stdout
+        assert "tail -f" in output or "No logs" in output
+
+    def test_local_cancel(self):
+        """flowsim cancel --scheduler local should return a message (sync jobs can't be cancelled)."""
+        r = _flowsim_cli(
+            "cancel",
+            "--scheduler", "local",
+            "--job", "flowsim-perf",
+        )
+        assert r.returncode == 0
+        assert "cannot be cancelled" in r.stdout.lower() or "synchronous" in r.stdout.lower()
+
+    def test_local_list(self):
+        """flowsim list --scheduler local should list jobs from log files."""
+        r = _flowsim_cli(
+            "list",
+            "--scheduler", "local",
+        )
+        assert r.returncode == 0
+        output = r.stdout
+        # Should either show jobs or "No jobs found"
+        assert "JOB_ID" in output or "No jobs found" in output
+
+    def test_local_list_status_filter(self):
+        """flowsim list --status Completed should filter."""
+        r = _flowsim_cli(
+            "list",
+            "--scheduler", "local",
+            "--status", "Completed",
+        )
+        assert r.returncode == 0
+
+
+# =====================================================================
+# LOCAL SCHEDULER — unit-level tests for JobResult and list_jobs
+# =====================================================================
+class TestLocalSchedulerAPI:
+    """Test LocalScheduler API directly (no subprocess, no GPU)."""
+
+    def test_submit_returns_job_result(self):
+        """LocalScheduler.submit() must return a JobResult, not a string."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sched = LocalScheduler(workdir=tmpdir)
+            spec = ProfileJobSpec(
+                collect="perf",
+                model_path="Qwen/Qwen3-8B",
+                output_dir=os.path.join(tmpdir, "traces"),
+            )
+            # Monkey-patch: make build_shell_command return a trivial command
+            spec.build_shell_command = lambda: "echo hello"
+            result = sched.submit(spec)
+            assert isinstance(result, JobResult), f"Expected JobResult, got {type(result)}"
+            assert result.scheduler == "local"
+            assert result.state == "Completed"
+            assert result.job_id != ""
+            assert result.output_dir == spec.output_dir
+
+    def test_submit_failed_returns_failed_state(self):
+        """A failing command should return JobResult with state=Failed."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sched = LocalScheduler(workdir=tmpdir)
+            spec = ProfileJobSpec(
+                collect="perf",
+                model_path="Qwen/Qwen3-8B",
+                output_dir=os.path.join(tmpdir, "traces"),
+            )
+            spec.build_shell_command = lambda: "exit 1"
+            result = sched.submit(spec)
+            assert isinstance(result, JobResult)
+            assert result.state == "Failed"
+
+    def test_list_jobs_finds_log_files(self):
+        """list_jobs() should find jobs from log file names."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dir = os.path.join(tmpdir, "stage_traces", "logs")
+            os.makedirs(log_dir)
+            # Create fake log files
+            for name in [
+                "flowsim-perf-qwen3-8b-bs1-il512_1700000001.stdout.log",
+                "flowsim-perf-qwen3-8b-bs1-il512_1700000001.stderr.log",
+                "flowsim-perf-qwen3-8b-bs1-il1024_1700000002.stdout.log",
+                "flowsim-perf-qwen3-8b-bs1-il1024_1700000002.stderr.log",
+            ]:
+                open(os.path.join(log_dir, name), "w").close()
+
+            sched = LocalScheduler(workdir=tmpdir)
+            jobs = sched.list_jobs()
+            assert len(jobs) == 2
+            assert all("job_id" in j and "state" in j for j in jobs)
+
+    def test_list_jobs_status_filter(self):
+        """list_jobs(status_filter=...) should filter results."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dir = os.path.join(tmpdir, "stage_traces", "logs")
+            os.makedirs(log_dir)
+            open(os.path.join(log_dir, "flowsim-perf-x_100.stdout.log"), "w").close()
+            open(os.path.join(log_dir, "flowsim-perf-x_100.stderr.log"), "w").close()
+
+            sched = LocalScheduler(workdir=tmpdir)
+            assert len(sched.list_jobs(status_filter="Completed")) == 1
+            assert len(sched.list_jobs(status_filter="Running")) == 0
+
+    def test_logs_follow_shows_tail_f(self):
+        """logs(follow=True) should return a tail -f command."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dir = os.path.join(tmpdir, "stage_traces", "logs")
+            os.makedirs(log_dir)
+            open(os.path.join(log_dir, "flowsim-perf-x_100.stdout.log"), "w").close()
+
+            sched = LocalScheduler(workdir=tmpdir)
+            text = sched.logs("flowsim-perf-x", follow=True)
+            assert "tail -f" in text
+
+    def test_cancel_returns_message(self):
+        """cancel() should return a message about sync jobs."""
+        sched = LocalScheduler()
+        msg = sched.cancel("some-job")
+        assert "synchronous" in msg.lower() or "cannot" in msg.lower()
+
+    def test_submit_pd_pair_returns_list(self):
+        """submit_pd_pair() must return list[JobResult]."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sched = LocalScheduler(workdir=tmpdir)
+            spec = ProfileJobSpec(
+                collect="perf",
+                model_path="Qwen/Qwen3-8B",
+                output_dir=os.path.join(tmpdir, "traces"),
+            )
+            # Monkey-patch to avoid real profiling
+            spec.build_shell_command = lambda: "echo hello"
+            results = sched.submit_pd_pair(spec)
+            assert isinstance(results, list)
+            assert len(results) == 2
+            assert all(isinstance(r, JobResult) for r in results)
+            # One should be prefill, one decode
+            modes = {r.job_id for r in results}
+            assert any("prefill" in m for m in modes)
+            assert any("decode" in m for m in modes)
+
 
 # =====================================================================
 # K8S SCHEDULER
@@ -289,12 +448,21 @@ class TestK8sScheduler:
         # Should mention kubectl or pod name or "No pods"
         assert "kubectl" in r3.stdout or "No pods" in r3.stdout or "Pod:" in r3.stdout
 
-        # Cleanup: delete the K8s job
-        subprocess.run(
-            ["kubectl", "--context", "kind-flowsim", "delete", "job", job_name,
-             "-n", "default", "--ignore-not-found"],
-            capture_output=True, timeout=30,
-        )
+        # Check logs --follow
+        r3f = _flowsim_cli("logs", "--scheduler", "k8s", "--job", job_name, "--follow")
+        assert r3f.returncode == 0
+        assert "kubectl logs -f" in r3f.stdout
+
+        # Check list
+        r4 = _flowsim_cli("list", "--scheduler", "k8s")
+        assert r4.returncode == 0
+        # Our job should appear in the listing
+        assert job_name in r4.stdout or "JOB_ID" in r4.stdout
+
+        # Cancel via flowsim cancel
+        r5 = _flowsim_cli("cancel", "--scheduler", "k8s", "--job", job_name)
+        assert r5.returncode == 0
+        assert "deleted" in r5.stdout.lower()
 
 
 # =====================================================================

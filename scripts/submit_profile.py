@@ -68,7 +68,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     slurm_cfg = load_slurm_config()
 
     p = argparse.ArgumentParser(
-        description="Submit FlowSim profiling jobs to K8s or Slurm.",
+        description="Submit FlowSim profiling jobs to local, K8s, or Slurm.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -117,127 +117,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     infra.add_argument("--output-dir", default="")
     infra.add_argument("--job-name", default="")
 
-    # -- Local options --
-    loc = p.add_argument_group("local options")
-    loc.add_argument(
-        "--local-gpus",
-        default="",
-        help="CUDA_VISIBLE_DEVICES for local execution (e.g. '0' or '0,1')",
-    )
-    loc.add_argument(
-        "--local-workdir",
-        default="",
-        help="Working directory for local execution (default: FlowSim project root)",
-    )
-
-    # -- Kubernetes-specific --
-    k8s = p.add_argument_group("kubernetes options (config: ~/.flowsim/k8s.yaml)")
-    k8s.add_argument(
-        "--k8s-namespace",
-        default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
-        help="K8s namespace (env: FLOWSIM_K8S_NAMESPACE)",
-    )
-    k8s.add_argument(
-        "--k8s-kubeconfig",
-        default=_d("KUBECONFIG", k8s_cfg, "kubeconfig", ""),
-        help="Path to kubeconfig file (env: KUBECONFIG)",
-    )
-    k8s.add_argument(
-        "--k8s-context",
-        default=_d("FLOWSIM_K8S_CONTEXT", k8s_cfg, "context", ""),
-        help="kubeconfig context (env: FLOWSIM_K8S_CONTEXT)",
-    )
-    k8s.add_argument(
-        "--k8s-pvc",
-        default=cfg_get(k8s_cfg, "pvc", ""),
-        help="PVC name for output volume (omit for emptyDir)",
-    )
-    k8s.add_argument(
-        "--k8s-host-output-dir",
-        default=cfg_get(k8s_cfg, "host_output_dir", ""),
-        help="hostPath for output (used when --k8s-pvc is empty)",
-    )
-    k8s.add_argument(
-        "--k8s-node-selector",
-        action="append",
-        default=[],
-        metavar="KEY=VALUE",
-        help="Node selector labels (repeatable)",
-    )
-    k8s.add_argument(
-        "--k8s-service-account",
-        default=cfg_get(k8s_cfg, "service_account", ""),
-    )
-    k8s.add_argument(
-        "--k8s-shm-size",
-        default=cfg_get(k8s_cfg, "shm_size", "16Gi"),
-    )
-
-    # -- Slurm-specific --
-    slurm = p.add_argument_group("slurm options (config: ~/.flowsim/slurm.yaml)")
-    slurm.add_argument(
-        "--slurm-partition",
-        default=_d("FLOWSIM_SLURM_PARTITION", slurm_cfg, "partition", ""),
-        help="Slurm partition (env: FLOWSIM_SLURM_PARTITION)",
-    )
-    slurm.add_argument(
-        "--slurm-time",
-        default=_d("FLOWSIM_SLURM_TIME", slurm_cfg, "time", "02:00:00"),
-        help="Wall time limit (env: FLOWSIM_SLURM_TIME)",
-    )
-    slurm.add_argument(
-        "--slurm-rest-url",
-        default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
-        help="slurmrestd base URL (env: FLOWSIM_SLURM_REST_URL)",
-    )
-    slurm.add_argument(
-        "--slurm-jwt-token",
-        default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
-        help="JWT token for slurmrestd (env: FLOWSIM_SLURM_JWT_TOKEN)",
-    )
-    slurm.add_argument(
-        "--slurm-api-version",
-        default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
-        help="slurmrestd API version (env: FLOWSIM_SLURM_API_VERSION)",
-    )
-    slurm.add_argument(
-        "--slurm-no-verify-ssl",
-        action="store_true",
-        help="Skip TLS certificate verification for slurmrestd",
-    )
-    slurm.add_argument(
-        "--slurm-account",
-        default=cfg_get(slurm_cfg, "account", ""),
-    )
-    slurm.add_argument(
-        "--slurm-constraint",
-        default=cfg_get(slurm_cfg, "constraint", ""),
-    )
-    slurm.add_argument(
-        "--slurm-container-runtime",
-        choices=["docker", "enroot", "none"],
-        default=cfg_get(slurm_cfg, "container_runtime", "none"),
-    )
-    slurm.add_argument(
-        "--slurm-container-mounts",
-        default=cfg_get(slurm_cfg, "container_mounts", ""),
-    )
-    # Modules from config (list) + CLI (append)
-    cfg_modules = slurm_cfg.get("modules") if isinstance(slurm_cfg.get("modules"), list) else []
-    slurm.add_argument(
-        "--slurm-module",
-        action="append",
-        default=[str(m) for m in cfg_modules],
-        help="Modules to load (repeatable, merged with config)",
-    )
-    slurm.add_argument(
-        "--slurm-extra-sbatch",
-        action="append",
-        default=[],
-        metavar="DIRECTIVE",
-        help="Extra #SBATCH directives (repeatable, without prefix)",
-    )
-
     # -- Action --
     p.add_argument(
         "--dry-run",
@@ -275,6 +154,133 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="InfiniBand device for RDMA transfer",
     )
+
+    # ---- Two-pass: peek at --scheduler, then add only relevant args ----
+    # Use a minimal pre-parser to avoid required-arg errors during peek.
+    _pre = argparse.ArgumentParser(add_help=False)
+    _pre.add_argument("--scheduler", choices=["local", "k8s", "slurm"])
+    pre, _ = _pre.parse_known_args(argv)
+
+    if pre.scheduler == "local":
+        loc = p.add_argument_group("local options")
+        loc.add_argument(
+            "--local-gpus",
+            default="",
+            help="CUDA_VISIBLE_DEVICES for local execution (e.g. '0' or '0,1')",
+        )
+        loc.add_argument(
+            "--local-workdir",
+            default="",
+            help="Working directory for local execution (default: FlowSim project root)",
+        )
+
+    elif pre.scheduler == "k8s":
+        k8s = p.add_argument_group("kubernetes options (config: ~/.flowsim/k8s.yaml)")
+        k8s.add_argument(
+            "--k8s-namespace",
+            default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
+            help="K8s namespace (env: FLOWSIM_K8S_NAMESPACE)",
+        )
+        k8s.add_argument(
+            "--k8s-kubeconfig",
+            default=_d("KUBECONFIG", k8s_cfg, "kubeconfig", ""),
+            help="Path to kubeconfig file (env: KUBECONFIG)",
+        )
+        k8s.add_argument(
+            "--k8s-context",
+            default=_d("FLOWSIM_K8S_CONTEXT", k8s_cfg, "context", ""),
+            help="kubeconfig context (env: FLOWSIM_K8S_CONTEXT)",
+        )
+        k8s.add_argument(
+            "--k8s-pvc",
+            default=cfg_get(k8s_cfg, "pvc", ""),
+            help="PVC name for output volume (omit for emptyDir)",
+        )
+        k8s.add_argument(
+            "--k8s-host-output-dir",
+            default=cfg_get(k8s_cfg, "host_output_dir", ""),
+            help="hostPath for output (used when --k8s-pvc is empty)",
+        )
+        k8s.add_argument(
+            "--k8s-node-selector",
+            action="append",
+            default=[],
+            metavar="KEY=VALUE",
+            help="Node selector labels (repeatable)",
+        )
+        k8s.add_argument(
+            "--k8s-service-account",
+            default=cfg_get(k8s_cfg, "service_account", ""),
+        )
+        k8s.add_argument(
+            "--k8s-shm-size",
+            default=cfg_get(k8s_cfg, "shm_size", "16Gi"),
+        )
+
+    elif pre.scheduler == "slurm":
+        slurm = p.add_argument_group("slurm options (config: ~/.flowsim/slurm.yaml)")
+        slurm.add_argument(
+            "--slurm-partition",
+            default=_d("FLOWSIM_SLURM_PARTITION", slurm_cfg, "partition", ""),
+            help="Slurm partition (env: FLOWSIM_SLURM_PARTITION)",
+        )
+        slurm.add_argument(
+            "--slurm-time",
+            default=_d("FLOWSIM_SLURM_TIME", slurm_cfg, "time", "02:00:00"),
+            help="Wall time limit (env: FLOWSIM_SLURM_TIME)",
+        )
+        slurm.add_argument(
+            "--slurm-rest-url",
+            default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
+            help="slurmrestd base URL (env: FLOWSIM_SLURM_REST_URL)",
+        )
+        slurm.add_argument(
+            "--slurm-jwt-token",
+            default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
+            help="JWT token for slurmrestd (env: FLOWSIM_SLURM_JWT_TOKEN)",
+        )
+        slurm.add_argument(
+            "--slurm-api-version",
+            default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
+            help="slurmrestd API version (env: FLOWSIM_SLURM_API_VERSION)",
+        )
+        slurm.add_argument(
+            "--slurm-no-verify-ssl",
+            action="store_true",
+            help="Skip TLS certificate verification for slurmrestd",
+        )
+        slurm.add_argument(
+            "--slurm-account",
+            default=cfg_get(slurm_cfg, "account", ""),
+        )
+        slurm.add_argument(
+            "--slurm-constraint",
+            default=cfg_get(slurm_cfg, "constraint", ""),
+        )
+        slurm.add_argument(
+            "--slurm-container-runtime",
+            choices=["docker", "enroot", "none"],
+            default=cfg_get(slurm_cfg, "container_runtime", "none"),
+        )
+        slurm.add_argument(
+            "--slurm-container-mounts",
+            default=cfg_get(slurm_cfg, "container_mounts", ""),
+        )
+        # Modules from config (list) + CLI (append)
+        cfg_modules = slurm_cfg.get("modules") if isinstance(slurm_cfg.get("modules"), list) else []
+        slurm.add_argument(
+            "--slurm-module",
+            action="append",
+            default=[str(m) for m in cfg_modules],
+            help="Modules to load (repeatable, merged with config)",
+        )
+        slurm.add_argument(
+            "--slurm-extra-sbatch",
+            action="append",
+            default=[],
+            metavar="DIRECTIVE",
+            help="Extra #SBATCH directives (repeatable, without prefix)",
+        )
 
     return p.parse_args(argv)
 
