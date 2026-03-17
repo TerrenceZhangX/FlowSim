@@ -250,7 +250,13 @@ class K8sScheduler(BaseScheduler):
         }
 
     def logs(self, job_id: str, *, tail: int = 100) -> str:
-        """Retrieve logs from the pod(s) of a K8s Job."""
+        """Retrieve logs from the pod(s) of a K8s Job.
+
+        Shows the Pod stdout/stderr (profiling script output).
+        Server log files are persisted on the PVC/hostPath under
+        ``{output_dir}/logs/`` and can be accessed from the node
+        or another pod mounting the same volume.
+        """
         try:
             from kubernetes import client as k8s_client
         except ImportError:
@@ -276,6 +282,12 @@ class K8sScheduler(BaseScheduler):
                 )
             except Exception as exc:
                 log_text = f"(error reading logs: {exc})"
-            parts.append(f"=== {name} ===\n{log_text}")
+            parts.append(f"=== Pod: {name} (last {tail} lines) ===\n{log_text}")
+
+        # Hint about persistent server logs
+        if self.pvc_name:
+            parts.append(f"\nServer logs persisted on PVC '{self.pvc_name}' under {{output_dir}}/logs/")
+        elif self.host_output_dir:
+            parts.append(f"\nServer logs at {self.host_output_dir}/logs/ on the scheduled node")
 
         return "\n".join(parts)

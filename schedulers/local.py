@@ -159,19 +159,36 @@ class LocalScheduler(BaseScheduler):
         }
 
     def logs(self, job_id: str, *, tail: int = 100) -> str:
-        """Read the last *tail* lines from the most recent local log file."""
+        """Show log files for a local job.
+
+        Lists all log files matching *job_id*, then prints the last
+        *tail* lines of the most recent stdout **and** stderr logs.
+        """
         import glob
 
         log_dir = os.path.join(self.workdir, "stage_traces", "logs")
-        pattern = os.path.join(log_dir, f"{job_id}_*.stdout.log")
+        pattern = os.path.join(log_dir, f"{job_id}_*")
         matches = sorted(glob.glob(pattern))
 
         if not matches:
             return f"No logs found matching {pattern}"
 
-        latest = matches[-1]
-        with open(latest) as f:
-            all_lines = f.readlines()
+        parts = [f"Log files ({len(matches)}):"]
+        for p in matches:
+            size = os.path.getsize(p)
+            parts.append(f"  {p}  ({size} bytes)")
+        parts.append("")
 
-        header = f"=== {latest} (last {tail} lines) ===\n"
-        return header + "".join(all_lines[-tail:])
+        # Show tail of latest stdout + stderr
+        stdout_files = sorted(f for f in matches if f.endswith(".stdout.log"))
+        stderr_files = sorted(f for f in matches if f.endswith(".stderr.log"))
+
+        for label, files in [("stdout", stdout_files), ("stderr", stderr_files)]:
+            if files:
+                latest = files[-1]
+                with open(latest) as fh:
+                    lines = fh.readlines()
+                parts.append(f"=== {latest} (last {tail} lines) ===")
+                parts.append("".join(lines[-tail:]))
+
+        return "\n".join(parts)
