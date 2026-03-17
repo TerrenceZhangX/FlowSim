@@ -18,6 +18,11 @@ of a given kernel name in the timing CSV is matched to the *n*-th occurrence in
 the shape CSV.  This works because the same model + same workload produces the
 same deterministic kernel dispatch sequence regardless of CUDA-graph mode.
 
+For any kernel name present in *both* CSVs, the occurrence counts must match
+exactly (a ``ValueError`` is raised otherwise).  Kernels that appear only in
+the timing CSV (e.g. CUDA-graph launcher stubs) are kept as-is with ``N/A``
+dims — this is expected and not treated as an error.
+
 Usage — Python API
 ------------------
     from utils.shape_merge import merge_shapes, merge_shapes_dir
@@ -45,7 +50,6 @@ import csv
 import glob
 import os
 import re
-import sys
 from collections import defaultdict
 from typing import Optional
 
@@ -166,9 +170,9 @@ def merge_shapes(
             stats["already_ok"] += 1
             continue
 
-        # Look up the nth occurrence in shape CSV.  Timing and shape
-        # passes must capture the same number of batches so kernel
-        # counts match 1:1.  If they don't, it's a configuration bug.
+        # Look up the nth occurrence in shape CSV.  For kernels present
+        # in both CSVs, occurrence counts must match 1:1.  Kernels only
+        # in the timing CSV (e.g. graph-launcher stubs) keep N/A dims.
         shape_entries = shape_lookup.get(kname, [])
         if shape_entries:
             if idx >= len(shape_entries):
