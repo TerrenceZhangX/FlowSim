@@ -11,6 +11,17 @@ import json
 
 from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
 
+
+def _k8s_job_state(status) -> str:
+    """Derive a human-readable state string from a K8s Job status object."""
+    if status.succeeded and status.succeeded > 0:
+        return "Succeeded"
+    if status.failed and status.failed > 0:
+        return "Failed"
+    if status.active and status.active > 0:
+        return "Running"
+    return "Pending"
+
 # Optional: nicer YAML output for dry-run.
 try:
     import yaml as _yaml  # type: ignore[import-untyped]
@@ -216,17 +227,9 @@ class K8sScheduler(BaseScheduler):
         batch_api, core_api = self._load_k8s()
 
         job = batch_api.read_namespaced_job(name=job_id, namespace=self.namespace)
-        st = job.status
 
         # Determine state
-        if st.succeeded and st.succeeded > 0:
-            state = "Succeeded"
-        elif st.failed and st.failed > 0:
-            state = "Failed"
-        elif st.active and st.active > 0:
-            state = "Running"
-        else:
-            state = "Pending"
+        state = _k8s_job_state(job.status)
 
         # Pod info
         pods = core_api.list_namespaced_pod(
@@ -335,15 +338,7 @@ class K8sScheduler(BaseScheduler):
         )
         result: list[dict] = []
         for job in jobs.items:
-            st = job.status
-            if st.succeeded and st.succeeded > 0:
-                state = "Succeeded"
-            elif st.failed and st.failed > 0:
-                state = "Failed"
-            elif st.active and st.active > 0:
-                state = "Running"
-            else:
-                state = "Pending"
+            state = _k8s_job_state(job.status)
 
             if status_filter and state.lower() != status_filter.lower():
                 continue

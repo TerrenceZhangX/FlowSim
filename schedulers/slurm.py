@@ -1,8 +1,7 @@
 """Slurm sbatch scheduler for FlowSim profiling.
 
 ``render()`` / ``dry_run()`` produce a standalone bash script (zero deps).
-``submit()`` posts the script to a slurmrestd endpoint via stdlib
-``urllib.request`` — no extra packages needed.
+``submit()`` pipes the script to ``sbatch`` by default (CLI mode).
 
 Two submission modes are supported:
 

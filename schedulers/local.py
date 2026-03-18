@@ -330,9 +330,6 @@ class LocalScheduler(BaseScheduler):
                 continue
             name = m.group(1)
             ts = m.group(2)
-            stderr = path.replace(".stdout.log", ".stderr.log")
-            stderr_size = os.path.getsize(stderr) if os.path.exists(stderr) else 0
-            # If stderr has content, might have failed; otherwise completed
             state = "Completed"
             jobs.append({
                 "job_id": name,

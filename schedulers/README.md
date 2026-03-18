@@ -182,21 +182,20 @@ bash dockerfiles/dev-teardown.sh kind
 
 生成 sbatch 脚本并提交到 Slurm 集群。支持两种提交模式：
 
-- **CLI 模式**（推荐）：通过 `sbatch`/`squeue`/`scancel` 命令
-- **REST 模式**：通过 slurmrestd REST API + JWT 认证
+- **CLI 模式**（推荐，默认）：通过 `sbatch`/`squeue`/`scancel` 命令
+- **REST 模式**（已弃用）：通过 slurmrestd REST API + JWT 认证
 
 ### 首次配置
 
 ```bash
 # CLI 模式（推荐，无需 slurmrestd）
 flowsim init slurm \
-    --rest-url http://unused \
     --partition gpu \
     --account my-project \
     --container-runtime none \
     --force
 
-# REST 模式（需要 slurmrestd）
+# REST 模式（已弃用，需要 slurmrestd）
 flowsim init slurm \
     --rest-url https://slurm.example.com:6820 \
     --partition gpu \
@@ -224,7 +223,7 @@ flowsim submit --scheduler slurm \
     --slurm-partition normal \
     --collect perf --model-path Qwen/Qwen3-8B --gpus 1
 
-# REST 模式
+# REST 模式（已弃用）
 flowsim submit --scheduler slurm \
     --slurm-submit-via rest \
     --slurm-rest-url http://localhost:6820 \
@@ -248,7 +247,7 @@ flowsim cancel --scheduler slurm --job 12345 \
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--slurm-submit-via` | 提交模式：`cli`（sbatch）或 `rest`（slurmrestd） | `rest` |
+| `--slurm-submit-via` | 提交模式：`cli`（sbatch）或 `rest`（slurmrestd，已弃用） | `cli` |
 | `--slurm-cli-prefix` | CLI 命令前缀（如 `"docker exec -i slurmctld"`） | 空 |
 | `--slurm-partition` | Slurm 分区 | 空 |
 | `--slurm-time` | 任务时间限制 | `02:00:00` |
@@ -284,7 +283,7 @@ flowsim cancel --scheduler slurm --job 12345 \
 - `"docker exec -i slurmctld"` — 通过 Docker 容器
 - `"ssh login-node"` — 通过 SSH
 
-**REST 模式：**
+**REST 模式（已弃用）：**
 1. 同上生成 sbatch 脚本
 2. `submit()` 通过 HTTP POST 到 slurmrestd 的 `/slurm/{version}/job/submit`
 3. 所有操作通过 slurmrestd REST API + JWT 认证
