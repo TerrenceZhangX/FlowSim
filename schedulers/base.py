@@ -48,13 +48,6 @@ class ProfileJobSpec:
     output_dir: str = "/flowsim/stage_traces"
     job_name: str = ""
 
-    # -- PD disaggregation --
-    disagg_mode: str = ""  # "prefill", "decode", or "" (unified)
-    disagg_transfer_backend: str = "mooncake"  # "mooncake" or "nixl"
-    disagg_bootstrap_port: int = 8998
-    disagg_prefill_pp: int = 1
-    disagg_ib_device: str = ""
-
     # -- Sweep: explicit list of (bs, input_len, existing_ctx) tuples --
     sweep_points: list[tuple[int, int, int]] = field(default_factory=list)
 
@@ -71,14 +64,6 @@ class ProfileJobSpec:
         ]
         if self.dp > 1:
             parts.append(f"--dp {self.dp}")
-        if self.disagg_mode:
-            parts.append(f"--disaggregation-mode {self.disagg_mode}")
-            parts.append(f"--disaggregation-transfer-backend {self.disagg_transfer_backend}")
-            parts.append(f"--disaggregation-bootstrap-port {self.disagg_bootstrap_port}")
-            if self.disagg_prefill_pp > 1:
-                parts.append(f"--disaggregation-prefill-pp {self.disagg_prefill_pp}")
-            if self.disagg_ib_device:
-                parts.append(f"--disaggregation-ib-device {self.disagg_ib_device}")
         if self.extra_server_opts:
             parts.append(self.extra_server_opts)
         return " ".join(parts)
@@ -149,19 +134,7 @@ class ProfileJobSpec:
             name = f"flowsim-{self.collect}-{model_short}-sweep{len(self.sweep_points)}pt"
         else:
             name = f"flowsim-{self.collect}-{model_short}-bs{self.bs}-il{self.input_len}"
-        if self.disagg_mode:
-            name += f"-{self.disagg_mode}"
         return name
-
-    def as_prefill(self) -> "ProfileJobSpec":
-        """Return a copy configured as the prefill instance."""
-        from dataclasses import replace
-        return replace(self, disagg_mode="prefill")
-
-    def as_decode(self) -> "ProfileJobSpec":
-        """Return a copy configured as the decode instance."""
-        from dataclasses import replace
-        return replace(self, disagg_mode="decode")
 
 
 class BaseScheduler(abc.ABC):
@@ -225,15 +198,3 @@ class BaseScheduler(abc.ABC):
     def dry_run(self, spec: ProfileJobSpec) -> str:
         """Render and return the manifest without submitting."""
         return self.render(spec)
-
-    def render_pd_pair(self, spec: ProfileJobSpec) -> str:
-        """Render both prefill and decode manifests for PD disaggregation."""
-        prefill = self.render(spec.as_prefill())
-        decode = self.render(spec.as_decode())
-        return f"# === PREFILL INSTANCE ===\n{prefill}\n# === DECODE INSTANCE ===\n{decode}"
-
-    def submit_pd_pair(self, spec: ProfileJobSpec) -> list[JobResult]:
-        """Submit both prefill and decode jobs."""
-        r1 = self.submit(spec.as_prefill())
-        r2 = self.submit(spec.as_decode())
-        return [r1, r2]

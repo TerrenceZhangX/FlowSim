@@ -343,19 +343,3 @@ stage_traces/{scheduler}/{YYYYMMDD_HHMMSS}/
 └── sweep_summary.json
 ```
 
----
-
-## PD Disaggregation (Experimental)
-
-Supports Prefill-Decode disaggregated deployment:
-
-```bash
-flowsim submit --scheduler k8s \
-    --pd \
-    --collect perf \
-    --model-path Qwen/Qwen3-235B-A22B-FP8 \
-    --tp 4 --gpus 8 \
-    --disagg-transfer-backend mooncake
-```
-
-This generates two Jobs: one prefill instance and one decode instance.

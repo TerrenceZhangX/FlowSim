@@ -41,32 +41,14 @@ class TestProfileJobSpec:
         spec.job_name = "my-job"
         assert spec.default_job_name() == "my-job"
 
-    def test_job_name_disagg_suffix(self, spec: ProfileJobSpec):
-        spec.disagg_mode = "prefill"
-        assert spec.default_job_name().endswith("-prefill")
-
     def test_build_server_opts_basic(self, spec: ProfileJobSpec):
         opts = spec.build_server_opts()
         assert "--model-path Qwen/Qwen3-8B" in opts
         assert "--tp 2" in opts
-        assert "--disaggregation" not in opts
 
     def test_build_server_opts_dp(self, spec: ProfileJobSpec):
         spec.dp = 4
         assert "--dp 4" in spec.build_server_opts()
-
-    def test_build_server_opts_disagg(self, spec: ProfileJobSpec):
-        spec.disagg_mode = "prefill"
-        spec.disagg_transfer_backend = "nixl"
-        opts = spec.build_server_opts()
-        assert "--disaggregation-mode prefill" in opts
-        assert "--disaggregation-transfer-backend nixl" in opts
-        assert "--disaggregation-bootstrap-port 8998" in opts
-
-    def test_build_server_opts_disagg_pp(self, spec: ProfileJobSpec):
-        spec.disagg_mode = "prefill"
-        spec.disagg_prefill_pp = 2
-        assert "--disaggregation-prefill-pp 2" in spec.build_server_opts()
 
     def test_build_server_opts_extra(self, spec: ProfileJobSpec):
         spec.extra_server_opts = "--some-flag"
@@ -85,16 +67,6 @@ class TestProfileJobSpec:
         shell = spec.build_shell_command()
         # server-opts contains spaces, must be quoted
         assert "--server-opts '" in shell or '--server-opts "' in shell
-
-    def test_as_prefill(self, spec: ProfileJobSpec):
-        p = spec.as_prefill()
-        assert p.disagg_mode == "prefill"
-        assert spec.disagg_mode == ""  # original unchanged
-
-    def test_as_decode(self, spec: ProfileJobSpec):
-        d = spec.as_decode()
-        assert d.disagg_mode == "decode"
-        assert spec.disagg_mode == ""
 
 
 # =========================================================================
@@ -175,14 +147,6 @@ class TestK8sScheduler:
         labels = doc["metadata"]["labels"]
         assert labels["app"] == "flowsim"
         assert labels["collect"] == "perf"
-
-    def test_render_pd_pair(self, scheduler, spec):
-        output = scheduler.render_pd_pair(spec)
-        assert "PREFILL INSTANCE" in output
-        assert "DECODE INSTANCE" in output
-        # Both should be valid YAML docs
-        docs = output.split("# === DECODE INSTANCE ===")
-        assert len(docs) == 2
 
 
 # =========================================================================
@@ -512,29 +476,6 @@ class TestCLISubmit:
         assert "#!/bin/bash" in out
         assert "#SBATCH --partition=gpu" in out
 
-    def test_submit_pd_dry_run(self):
-        out = self._run(
-            "--scheduler", "local",
-            "--collect", "perf",
-            "--model-path", "Qwen/Qwen3-8B",
-            "--pd",
-            "--dry-run",
-        )
-        assert "PREFILL INSTANCE" in out
-        assert "DECODE INSTANCE" in out
-        assert "--disaggregation-mode prefill" in out
-        assert "--disaggregation-mode decode" in out
-
-    def test_submit_pd_nixl_backend(self):
-        out = self._run(
-            "--scheduler", "local",
-            "--collect", "perf",
-            "--model-path", "Qwen/Qwen3-8B",
-            "--pd",
-            "--disagg-transfer-backend", "nixl",
-            "--dry-run",
-        )
-        assert "--disaggregation-transfer-backend nixl" in out
 
 
 # =========================================================================

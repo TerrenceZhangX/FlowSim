@@ -146,37 +146,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="[debug] Print rendered manifest without submitting",
     )
 
-    # -- PD disaggregation --
-    pd = p.add_argument_group("PD disaggregation")
-    pd.add_argument(
-        "--pd",
-        action="store_true",
-        help="Submit a prefill + decode job pair (PD disaggregation)",
-    )
-    pd.add_argument(
-        "--disagg-transfer-backend",
-        default="mooncake",
-        choices=["mooncake", "nixl"],
-        help="KV transfer backend (default: mooncake)",
-    )
-    pd.add_argument(
-        "--disagg-bootstrap-port",
-        type=int,
-        default=8998,
-        help="Bootstrap port for PD coordination (default: 8998)",
-    )
-    pd.add_argument(
-        "--disagg-prefill-pp",
-        type=int,
-        default=1,
-        help="Pipeline parallelism for prefill instance (default: 1)",
-    )
-    pd.add_argument(
-        "--disagg-ib-device",
-        default="",
-        help="InfiniBand device for RDMA transfer",
-    )
-
     # ---- Two-pass: peek at --scheduler, then add only relevant args ----
     # Use a minimal pre-parser to avoid required-arg errors during peek.
     _pre = argparse.ArgumentParser(add_help=False)
@@ -332,10 +301,6 @@ def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:
         output_dir=args.output_dir,
         job_name=args.job_name,
         extra_server_opts=args.extra_server_opts,
-        disagg_transfer_backend=args.disagg_transfer_backend,
-        disagg_bootstrap_port=args.disagg_bootstrap_port,
-        disagg_prefill_pp=args.disagg_prefill_pp,
-        disagg_ib_device=args.disagg_ib_device,
         sweep_points=sweep_points,
     )
 
@@ -407,23 +372,11 @@ def main(argv: list[str] | None = None) -> None:
     spec = _build_spec(args)
     scheduler = _build_scheduler(args)
 
-    is_pd = args.pd
-
     if args.dry_run:
-        if is_pd:
-            print(scheduler.render_pd_pair(spec))
-        else:
-            print(scheduler.dry_run(spec))
+        print(scheduler.dry_run(spec))
     else:
-        if is_pd:
-            results = scheduler.submit_pd_pair(spec)
-            for r in results:
-                print(r.message)
-            # Use the first result for follow-up hints
-            result = results[0]
-        else:
-            result = scheduler.submit(spec)
-            print(result.message)
+        result = scheduler.submit(spec)
+        print(result.message)
 
         # Tell user where to find results
         print()
