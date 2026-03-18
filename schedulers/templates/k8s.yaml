@@ -22,6 +22,7 @@ host_output_dir: ""         # hostPath alternative to PVC
 # Optional
 service_account: ""
 shm_size: "16Gi"
+runtime_class_name: ""      # e.g. "nvidia" for CDI-based GPU (Kind clusters)
 # node_selector:
 #   gpu: a100
 #   tier: high

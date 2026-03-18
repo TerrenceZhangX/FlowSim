@@ -50,25 +50,53 @@ class LocalScheduler(BaseScheduler):
         # schedulers/ is one level below project root
         return os.path.dirname(d)
 
+    @staticmethod
+    def _check_image_exists(image: str) -> None:
+        """Raise if the Docker image is not available locally."""
+        result = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True, timeout=10,
+        )
+        if result.returncode != 0:
+            raise SystemExit(
+                f"[local] Docker image '{image}' not found.\n"
+                f"Build it first, e.g.:\n"
+                f"  docker build -t {image} -f dockerfiles/cuda12.6.dockerfile ."
+            )
+
     def _docker_gpu_flag(self) -> str:
         """Build the ``--gpus`` flag for ``docker run``."""
         if not self.gpus:
             return "--gpus all"
         return f"--gpus '\"device={self.gpus}\"'"
 
-    def _build_docker_cmd(self, spec: ProfileJobSpec) -> str:
-        """Build the full ``docker run`` command."""
-        job_name = spec.default_job_name()[:63]
-        # Container always works with /flowsim/stage_traces internally.
-        container_output = "/flowsim/stage_traces"
-        container_log_dir = container_output + "/logs"
-        host_output = os.path.abspath(spec.output_dir)
-        host_log_dir = host_output + "/logs"
+    def _host_output_dir(self, spec_output_dir: str) -> str:
+        """Host directory that gets bind-mounted into the container.
 
-        # Build the inner command, then replace host paths with container paths.
+        Mirrors the container path structure under the host workdir.
+        e.g. container ``/flowsim/stage_traces/local/20260317_211318``
+        →  host ``{workdir}/stage_traces/local/20260317_211318``
+        """
+        # spec_output_dir is like /flowsim/stage_traces/local/{ts}
+        # Strip the /flowsim/ prefix to get the relative path
+        rel = spec_output_dir
+        if rel.startswith("/flowsim/"):
+            rel = rel[len("/flowsim/"):]
+        return os.path.join(self.workdir, rel)
+
+    def _build_docker_cmd(self, spec: ProfileJobSpec) -> str:
+        """Build the full ``docker run`` command.
+
+        Paths in *spec* (model_path, output_dir, log_dir) are expected to be
+        relative to the project root or absolute container paths (``/flowsim/…``).
+        The container workdir is ``/flowsim``, so relative paths resolve
+        correctly without any string replacement.
+        """
+        job_name = spec.default_job_name()[:63]
+        host_output = self._host_output_dir(spec.output_dir)
+        container_output = spec.output_dir  # e.g. /flowsim/stage_traces/local/{ts}
+
         inner_cmd = spec.build_shell_command()
-        inner_cmd = inner_cmd.replace(host_log_dir, container_log_dir)
-        inner_cmd = inner_cmd.replace(host_output, container_output)
 
         parts = [
             "docker run --rm",
@@ -78,6 +106,8 @@ class LocalScheduler(BaseScheduler):
             "--network=host",
             f"-e SGLANG_PROFILE_KERNELS=1",
             f"-v {host_output}:{container_output}",
+            f"-v {self.workdir}/simulator:/flowsim/simulator",
+            f"-v {self.workdir}/scripts:/flowsim/scripts",
             f"-w /flowsim",
             spec.image,
             f"bash -c {_shell_quote(inner_cmd)}",
@@ -85,6 +115,7 @@ class LocalScheduler(BaseScheduler):
         return " \\\n  ".join(parts)
 
     def render(self, spec: ProfileJobSpec) -> str:
+        self._check_image_exists(spec.image)
         return self._build_docker_cmd(spec)
 
     def submit(self, spec: ProfileJobSpec) -> JobResult:
@@ -93,8 +124,10 @@ class LocalScheduler(BaseScheduler):
         stdout and stderr are streamed to the terminal *and* saved to
         log files under ``spec.output_dir/logs/`` on the host.
         """
+        self._check_image_exists(spec.image)
+
         # Ensure host output dir exists before mounting
-        host_output = os.path.abspath(spec.output_dir)
+        host_output = self._host_output_dir(spec.output_dir)
         log_dir = os.path.join(host_output, "logs")
         os.makedirs(log_dir, exist_ok=True)
 
@@ -182,6 +215,18 @@ class LocalScheduler(BaseScheduler):
             return f"Stopped container {job_id}"
         return f"Could not stop container {job_id}: {proc.stderr.strip()}"
 
+    def _find_log_dirs(self) -> list[str]:
+        """Find all log directories under stage_traces/{scheduler}/*/logs/."""
+        import glob
+        base = os.path.join(self.workdir, "stage_traces", "local")
+        # New layout: stage_traces/local/{ts}/logs/
+        dirs = sorted(glob.glob(os.path.join(base, "*/logs")))
+        # Also check legacy flat layout: stage_traces/logs/
+        legacy = os.path.join(self.workdir, "stage_traces", "logs")
+        if os.path.isdir(legacy):
+            dirs.append(legacy)
+        return dirs
+
     def status(self, job_id: str) -> dict:
         """Check local job status by looking for log files.
 
@@ -189,20 +234,23 @@ class LocalScheduler(BaseScheduler):
         """
         import glob
 
-        log_dir = os.path.join(self.workdir, "stage_traces", "logs")
-        pattern = os.path.join(log_dir, f"{job_id}_*.stdout.log")
-        matches = sorted(glob.glob(pattern))
+        matches = []
+        for log_dir in self._find_log_dirs():
+            matches.extend(sorted(glob.glob(
+                os.path.join(log_dir, f"{job_id}_*.stdout.log")
+            )))
 
         if not matches:
             return {
                 "state": "NotFound",
-                "message": f"No logs found matching {pattern}",
+                "message": f"No logs found for job '{job_id}'",
                 "output_hint": "",
             }
 
         latest = matches[-1]
         stderr_log = latest.replace(".stdout.log", ".stderr.log")
-        trace_dir = os.path.join(self.workdir, "stage_traces")
+        # trace_dir is the parent of logs/
+        trace_dir = os.path.dirname(os.path.dirname(latest))
 
         return {
             "state": "Completed",
@@ -218,17 +266,20 @@ class LocalScheduler(BaseScheduler):
         """List log files for a local job and print access commands."""
         import glob
 
-        log_dir = os.path.join(self.workdir, "stage_traces", "logs")
-        pattern = os.path.join(log_dir, f"{job_id}_*")
-        matches = sorted(glob.glob(pattern))
+        matches = []
+        for log_dir in self._find_log_dirs():
+            matches.extend(sorted(glob.glob(
+                os.path.join(log_dir, f"{job_id}_*")
+            )))
 
         if not matches:
-            # Also try wildcard — user may have given a partial name
-            pattern = os.path.join(log_dir, f"*{job_id}*")
-            matches = sorted(glob.glob(pattern))
+            for log_dir in self._find_log_dirs():
+                matches.extend(sorted(glob.glob(
+                    os.path.join(log_dir, f"*{job_id}*")
+                )))
 
         if not matches:
-            return f"No logs found in {log_dir} matching '{job_id}'"
+            return f"No logs found matching '{job_id}'"
 
         if follow:
             stdout_files = sorted(f for f in matches if f.endswith(".stdout.log"))
@@ -236,6 +287,7 @@ class LocalScheduler(BaseScheduler):
                 return f"Follow logs with:\n  tail -f {stdout_files[-1]}"
             return f"No stdout log found to follow for '{job_id}'"
 
+        log_dir = os.path.dirname(matches[-1])
         parts = [f"Log directory: {log_dir}", ""]
         parts.append(f"Files ({len(matches)}):")
         for p in matches:
@@ -256,7 +308,7 @@ class LocalScheduler(BaseScheduler):
             parts.append("Follow logs:")
             parts.append(f"  tail -f {stdout_files[-1]}")
 
-        trace_dir = os.path.join(self.workdir, "stage_traces")
+        trace_dir = os.path.dirname(log_dir)  # parent of logs/
         parts.append("")
         parts.append(f"Trace files: {trace_dir}")
         parts.append(f"  ls {trace_dir}")
@@ -268,9 +320,11 @@ class LocalScheduler(BaseScheduler):
         import glob
         import re
 
-        log_dir = os.path.join(self.workdir, "stage_traces", "logs")
-        pattern = os.path.join(log_dir, "*.stdout.log")
-        matches = sorted(glob.glob(pattern))
+        matches = []
+        for log_dir in self._find_log_dirs():
+            matches.extend(sorted(glob.glob(
+                os.path.join(log_dir, "*.stdout.log")
+            )))
 
         jobs: list[dict] = []
         for path in matches:

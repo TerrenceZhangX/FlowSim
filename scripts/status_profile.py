@@ -72,6 +72,14 @@ def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> 
             "--k8s-context",
             default=_d("FLOWSIM_K8S_CONTEXT", k8s_cfg, "context", ""),
         )
+        p.add_argument(
+            "--k8s-pvc",
+            default=cfg_get(k8s_cfg, "pvc", ""),
+        )
+        p.add_argument(
+            "--k8s-host-output-dir",
+            default=cfg_get(k8s_cfg, "host_output_dir", ""),
+        )
 
     elif scheduler == "slurm":
         p.add_argument(
@@ -89,6 +97,15 @@ def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> 
         p.add_argument(
             "--slurm-no-verify-ssl",
             action="store_true",
+        )
+        p.add_argument(
+            "--slurm-submit-via",
+            choices=["rest", "cli"],
+            default=cfg_get(slurm_cfg, "submit_via", "rest"),
+        )
+        p.add_argument(
+            "--slurm-cli-prefix",
+            default=cfg_get(slurm_cfg, "cli_prefix", ""),
         )
 
 
@@ -109,6 +126,8 @@ def _build_scheduler(args: argparse.Namespace):
             namespace=args.k8s_namespace,
             kubeconfig=args.k8s_kubeconfig,
             context=args.k8s_context,
+            pvc_name=getattr(args, "k8s_pvc", "") or "",
+            host_output_dir=getattr(args, "k8s_host_output_dir", "") or "",
         )
     else:
         return SlurmScheduler(
@@ -116,6 +135,8 @@ def _build_scheduler(args: argparse.Namespace):
             jwt_token=args.slurm_jwt_token,
             api_version=args.slurm_api_version,
             verify_ssl=not args.slurm_no_verify_ssl,
+            submit_via=args.slurm_submit_via,
+            cli_prefix=args.slurm_cli_prefix,
         )
 
 
@@ -138,6 +159,7 @@ def main_status(argv: list[str] | None = None) -> None:
     scheduler = _build_scheduler(args)
     try:
         info = scheduler.status(args.job)
+        print(f"State: {info['state']}")
         print(info["message"])
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -281,6 +281,11 @@ class TestSlurmScheduler:
 class TestLocalScheduler:
     """Tests for local execution backend."""
 
+    @pytest.fixture(autouse=True)
+    def _skip_image_check(self):
+        with mock.patch.object(LocalScheduler, "_check_image_exists"):
+            yield
+
     @pytest.fixture()
     def spec(self) -> ProfileJobSpec:
         return ProfileJobSpec(
@@ -446,6 +451,11 @@ class TestCLIInit:
 
 class TestCLISubmit:
     """Tests for `flowsim submit` argument parsing and dry-run."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_image_check(self):
+        with mock.patch.object(LocalScheduler, "_check_image_exists"):
+            yield
 
     def _run(self, *args: str, expect_ok: bool = True) -> str:
         """Run submit via the Python function, capture stdout."""

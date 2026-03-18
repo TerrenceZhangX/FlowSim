@@ -34,6 +34,8 @@ def _init_k8s_parser(sub: argparse._SubParsersAction) -> None:
                    help="Service account for the job pod")
     p.add_argument("--shm-size", default="16Gi",
                    help="Shared memory size (default: 16Gi)")
+    p.add_argument("--runtime-class-name", default="",
+                   help="RuntimeClass for pod (e.g. 'nvidia' for CDI mode)")
     p.add_argument("--force", action="store_true",
                    help="Overwrite existing config file")
 
@@ -100,6 +102,7 @@ def _cmd_init(argv: list[str]) -> int:
             "host_output_dir": args.host_output_dir,
             "service_account": args.service_account,
             "shm_size": args.shm_size,
+            "runtime_class_name": args.runtime_class_name,
         }
         dst = _CONFIG_DIR / "k8s.yaml"
 

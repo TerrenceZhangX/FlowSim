@@ -15,6 +15,10 @@ log()  { printf "\033[1;32m[teardown]\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m[teardown]\033[0m %s\n" "$*"; }
 
 teardown_kind() {
+    # Delete device plugin namespace (contains per-node DaemonSets)
+    if command -v kubectl >/dev/null; then
+        kubectl delete namespace nvidia-device-plugin --ignore-not-found 2>/dev/null || true
+    fi
     if command -v kind >/dev/null && kind get clusters 2>/dev/null | grep -q "^${KIND_CLUSTER_NAME}$"; then
         log "Deleting kind cluster '${KIND_CLUSTER_NAME}'..."
         kind delete cluster --name "${KIND_CLUSTER_NAME}"

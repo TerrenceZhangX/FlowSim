@@ -3,12 +3,22 @@
 ``render()`` / ``dry_run()`` produce a standalone bash script (zero deps).
 ``submit()`` posts the script to a slurmrestd endpoint via stdlib
 ``urllib.request`` — no extra packages needed.
+
+Two submission modes are supported:
+
+* **rest** (default) — POST the script to a slurmrestd endpoint.
+  Requires ``rest_url`` and ``jwt_token``.
+* **cli** — pipe the script to ``sbatch`` via subprocess.
+  Requires ``sbatch``/``squeue``/``scancel`` on PATH (or reachable
+  via ``cli_prefix``, e.g. ``"docker exec slurmctld"``).
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 import ssl
+import subprocess
 import urllib.error
 import urllib.request
 
@@ -55,6 +65,12 @@ class SlurmScheduler(BaseScheduler):
         (relevant for ``"none"`` runtime).
     extra_sbatch : list[str]
         Additional ``#SBATCH`` lines, each *without* the ``#SBATCH`` prefix.
+    submit_via : str
+        ``"rest"`` (default) — use slurmrestd REST API.
+        ``"cli"``  — use ``sbatch`` / ``squeue`` / ``scancel`` subprocess.
+    cli_prefix : str
+        Shell prefix for CLI commands (e.g. ``"docker exec -i slurmctld"``).
+        Only used when ``submit_via="cli"``.
     """
 
     def __init__(
@@ -72,6 +88,8 @@ class SlurmScheduler(BaseScheduler):
         container_mounts: str = "",
         modules: list[str] | None = None,
         extra_sbatch: list[str] | None = None,
+        submit_via: str = "rest",
+        cli_prefix: str = "",
     ) -> None:
         self.partition = partition
         self.time_limit = time_limit
@@ -85,6 +103,8 @@ class SlurmScheduler(BaseScheduler):
         self.container_mounts = container_mounts
         self.modules = modules or []
         self.extra_sbatch = extra_sbatch or []
+        self.submit_via = submit_via
+        self.cli_prefix = cli_prefix
 
     def render(self, spec: ProfileJobSpec) -> str:
         job_name = spec.default_job_name()
@@ -109,6 +129,10 @@ class SlurmScheduler(BaseScheduler):
 
         lines.append("")
         lines.append("set -euo pipefail")
+        lines.append("")
+
+        # Ensure output dir exists (needed for #SBATCH --output)
+        lines.append(f"mkdir -p {spec.output_dir}")
         lines.append("")
 
         if self.modules:
@@ -151,6 +175,61 @@ class SlurmScheduler(BaseScheduler):
         return "\n".join(lines)
 
     def submit(self, spec: ProfileJobSpec) -> JobResult:
+        """Submit the job via REST API or CLI, depending on ``submit_via``."""
+        if self.submit_via == "cli":
+            return self._submit_cli(spec)
+        return self._submit_rest(spec)
+
+    # ------------------------------------------------------------------
+    # CLI helpers
+    # ------------------------------------------------------------------
+
+    def _cli_cmd(self, *args: str) -> list[str]:
+        """Build a command list, prepending ``cli_prefix`` if set."""
+        prefix = shlex.split(self.cli_prefix) if self.cli_prefix else []
+        return prefix + list(args)
+
+    def _cli_run(
+        self,
+        *args: str,
+        input_data: str | None = None,
+        timeout: int = 60,
+    ) -> subprocess.CompletedProcess:
+        """Run a Slurm CLI command and return the CompletedProcess."""
+        cmd = self._cli_cmd(*args)
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            input=input_data,
+            timeout=timeout,
+        )
+
+    def _submit_cli(self, spec: ProfileJobSpec) -> JobResult:
+        """Submit via ``sbatch`` (piping the script on stdin)."""
+        script = self.render(spec)
+        job_name = spec.default_job_name()
+
+        r = self._cli_run("sbatch", "--parsable", input_data=script, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"sbatch failed (exit {r.returncode}):\n{r.stderr}"
+            )
+
+        job_id = r.stdout.strip().split(";")[0]  # parsable: "jobid" or "jobid;cluster"
+        return JobResult(
+            job_id=job_id,
+            scheduler="slurm",
+            state="Submitted",
+            output_dir=spec.output_dir,
+            message=f"Submitted batch job {job_id}",
+        )
+
+    # ------------------------------------------------------------------
+    # REST submit
+    # ------------------------------------------------------------------
+
+    def _submit_rest(self, spec: ProfileJobSpec) -> JobResult:
         """Submit the job via slurmrestd REST API.
 
         Requires ``rest_url`` and ``jwt_token`` to be set.
@@ -264,6 +343,112 @@ class SlurmScheduler(BaseScheduler):
         return self._rest_request(path, method="GET")
 
     def cancel(self, job_id: str) -> str:
+        """Cancel a Slurm job."""
+        if self.submit_via == "cli":
+            return self._cancel_cli(job_id)
+        return self._cancel_rest(job_id)
+
+    def status(self, job_id: str) -> dict:
+        """Query Slurm job status."""
+        if self.submit_via == "cli":
+            return self._status_cli(job_id)
+        return self._status_rest(job_id)
+
+    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+        """Show Slurm job log information."""
+        if self.submit_via == "cli":
+            return self._logs_cli(job_id, tail=tail, follow=follow)
+        return self._logs_rest(job_id, tail=tail, follow=follow)
+
+    def list_jobs(self, *, status_filter: str = "") -> list[dict]:
+        """List Slurm jobs."""
+        if self.submit_via == "cli":
+            return self._list_jobs_cli(status_filter=status_filter)
+        return self._list_jobs_rest(status_filter=status_filter)
+
+    # ------------------------------------------------------------------
+    # CLI implementations
+    # ------------------------------------------------------------------
+
+    def _cancel_cli(self, job_id: str) -> str:
+        r = self._cli_run("scancel", job_id)
+        if r.returncode != 0:
+            raise RuntimeError(f"scancel failed: {r.stderr}")
+        return f"Cancelled Slurm job {job_id}"
+
+    def _status_cli(self, job_id: str) -> dict:
+        # Use scontrol show job — works for both running and completed jobs
+        # (completed jobs stay in memory for MinJobAge seconds, default 300s)
+        r = self._cli_run("scontrol", "show", "job", job_id)
+        if r.returncode != 0 or not r.stdout.strip():
+            return {"state": "Unknown", "message": f"No job found with ID {job_id}", "output_hint": ""}
+
+        # Parse key=value output
+        fields: dict[str, str] = {}
+        for token in r.stdout.replace("\n", " ").split():
+            if "=" in token:
+                k, _, v = token.partition("=")
+                fields[k] = v
+
+        state = fields.get("JobState", "UNKNOWN")
+        name = fields.get("JobName", "")
+        nodes = fields.get("NodeList", "")
+        output_file = fields.get("StdOut", "")
+
+        # Normalize to match test expectations
+        if state == "COMPLETED":
+            state = "Completed"
+        elif state == "FAILED":
+            state = "Failed"
+
+        msg_parts = [
+            f"Job ID: {job_id}  Name: {name}  State: {state}",
+            f"Nodes: {nodes}" if nodes else "Nodes: (not yet assigned)",
+        ]
+        if output_file:
+            msg_parts.append(f"Output log: {output_file}")
+
+        return {
+            "state": state,
+            "message": "\n".join(msg_parts),
+            "output_hint": output_file,
+        }
+
+    def _logs_cli(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+        info = self._status_cli(job_id)
+        return info["message"]
+
+    def _list_jobs_cli(self, *, status_filter: str = "") -> list[dict]:
+        r = self._cli_run(
+            "squeue", "-o", "%i|%j|%T|%P|%N", "-h",
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"squeue failed: {r.stderr}")
+        result: list[dict] = []
+        for line in r.stdout.strip().splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("|", 4)
+            name = parts[1] if len(parts) > 1 else ""
+            if not name.startswith("flowsim-"):
+                continue
+            state = parts[2] if len(parts) > 2 else "UNKNOWN"
+            if status_filter and state.upper() != status_filter.upper():
+                continue
+            result.append({
+                "job_id": parts[0] if parts else "",
+                "name": name,
+                "state": state,
+                "partition": parts[3] if len(parts) > 3 else "",
+                "nodes": parts[4] if len(parts) > 4 else "",
+            })
+        return result
+
+    # ------------------------------------------------------------------
+    # REST implementations
+    # ------------------------------------------------------------------
+
+    def _cancel_rest(self, job_id: str) -> str:
         """Cancel a Slurm job via slurmrestd DELETE."""
         body = self._rest_request(
             f"/slurm/{self.api_version}/job/{job_id}",
@@ -275,7 +460,7 @@ class SlurmScheduler(BaseScheduler):
             raise RuntimeError(f"slurmrestd cancel failed: {msgs}")
         return f"Cancelled Slurm job {job_id}"
 
-    def status(self, job_id: str) -> dict:
+    def _status_rest(self, job_id: str) -> dict:
         """Query Slurm job status via slurmrestd."""
         body = self._rest_get(f"/slurm/{self.api_version}/job/{job_id}")
 
@@ -312,9 +497,9 @@ class SlurmScheduler(BaseScheduler):
             "output_hint": output_file,
         }
 
-    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+    def _logs_rest(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """Show where Slurm job logs are and how to access them."""
-        info = self.status(job_id)
+        info = self._status_rest(job_id)
         output_file = info.get("output_hint", "")
         state = info.get("state", "UNKNOWN")
 
@@ -348,7 +533,7 @@ class SlurmScheduler(BaseScheduler):
 
         return "\n".join(parts)
 
-    def list_jobs(self, *, status_filter: str = "") -> list[dict]:
+    def _list_jobs_rest(self, *, status_filter: str = "") -> list[dict]:
         """List Slurm jobs via slurmrestd /jobs endpoint."""
         body = self._rest_get(f"/slurm/{self.api_version}/jobs")
         errors = body.get("errors") or []

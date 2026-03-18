@@ -216,6 +216,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "--k8s-shm-size",
             default=cfg_get(k8s_cfg, "shm_size", "16Gi"),
         )
+        k8s.add_argument(
+            "--k8s-runtime-class",
+            default=cfg_get(k8s_cfg, "runtime_class_name", ""),
+            help="RuntimeClass for pod (e.g. 'nvidia' for CDI mode)",
+        )
 
     elif pre.scheduler == "slurm":
         slurm = p.add_argument_group("slurm options (config: ~/.flowsim/slurm.yaml)")
@@ -281,6 +286,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             metavar="DIRECTIVE",
             help="Extra #SBATCH directives (repeatable, without prefix)",
         )
+        slurm.add_argument(
+            "--slurm-submit-via",
+            choices=["rest", "cli"],
+            default=cfg_get(slurm_cfg, "submit_via", "rest"),
+            help="Submission mode: rest (slurmrestd) or cli (sbatch subprocess)",
+        )
+        slurm.add_argument(
+            "--slurm-cli-prefix",
+            default=cfg_get(slurm_cfg, "cli_prefix", ""),
+            help='Shell prefix for CLI mode (e.g. "docker exec -i slurmctld")',
+        )
 
     return p.parse_args(argv)
 
@@ -334,6 +350,7 @@ def _build_scheduler(args: argparse.Namespace):
             node_selector=node_sel,
             service_account=args.k8s_service_account,
             shm_size=args.k8s_shm_size,
+            runtime_class_name=args.k8s_runtime_class,
         )
     else:
         return SlurmScheduler(
@@ -349,23 +366,27 @@ def _build_scheduler(args: argparse.Namespace):
             container_mounts=args.slurm_container_mounts,
             modules=args.slurm_module,
             extra_sbatch=args.slurm_extra_sbatch,
+            submit_via=args.slurm_submit_via,
+            cli_prefix=args.slurm_cli_prefix,
         )
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
-    # Smart defaults for output_dir based on scheduler
+    # Smart defaults for output_dir based on scheduler.
+    # Layout: stage_traces/{scheduler}/{timestamp}/
+    import time as _time
+    _ts = _time.strftime("%Y%m%d_%H%M%S")
     if not args.output_dir:
         if args.scheduler == "local":
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            args.output_dir = os.path.join(project_root, "stage_traces")
+            args.output_dir = f"/flowsim/stage_traces/local/{_ts}"
         elif args.scheduler == "slurm":
-            # Slurm: default to ~/flowsim_traces (shared filesystem)
-            args.output_dir = os.path.expanduser("~/flowsim_traces")
+            args.output_dir = os.path.expanduser(
+                f"~/flowsim_traces/slurm/{_ts}"
+            )
         else:
-            # K8s: container path (PVC/hostPath mounted here)
-            args.output_dir = "/flowsim/stage_traces"
+            args.output_dir = f"/flowsim/stage_traces/k8s/{_ts}"
 
     # Resolve Slurm JWT token from jwt_token_cmd in config if needed
     if args.scheduler == "slurm" and not args.slurm_jwt_token:
@@ -377,6 +398,13 @@ def main(argv: list[str] | None = None) -> None:
     # Validate required connection params before submit
     if not args.dry_run and args.scheduler not in ("local",):
         _validate_connection(args)
+
+    # For local scheduler, convert absolute host model_path to relative
+    # so it resolves correctly inside the container (workdir=/flowsim).
+    if args.scheduler == "local" and os.path.isabs(args.model_path):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if args.model_path.startswith(project_root):
+            args.model_path = os.path.relpath(args.model_path, project_root)
 
     spec = _build_spec(args)
     scheduler = _build_scheduler(args)
@@ -459,6 +487,16 @@ def _validate_connection(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
     elif args.scheduler == "slurm":
+        if args.slurm_submit_via == "cli":
+            # CLI mode only needs partition
+            if not args.slurm_partition:
+                sys.exit(
+                    "Error: missing required Slurm config:\n"
+                    "  - partition (--slurm-partition)\n\n"
+                    f"Set it in ~/.flowsim/slurm.yaml or via CLI flag.\n"
+                    + _INIT_HINT
+                )
+            return
         missing = []
         if not args.slurm_rest_url:
             missing.append("rest_url (--slurm-rest-url)")

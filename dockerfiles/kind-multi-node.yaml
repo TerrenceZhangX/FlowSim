@@ -1,34 +1,22 @@
-# kind cluster config — 1 control-plane + 2 GPU worker nodes
+# Kind cluster config — 1 control-plane + 1 GPU worker node
 #
-# Each worker gets one GPU via NVIDIA device plugin.
-# Requires: kind, kubectl, nvidia-container-toolkit
+# GPU support via CDI mode (NVIDIA k8s-device-plugin official approach).
+# See: https://github.com/NVIDIA/k8s-device-plugin/tree/main/demo/clusters/kind
+#
+# The single worker binds GPU 0.  Change the containerPath index to
+# assign a different GPU.
+#
+# Pre-requisites (host):
+#   - Docker with nvidia as default runtime
+#   - accept-nvidia-visible-devices-as-volume-mounts = true
+#     in /etc/nvidia-container-runtime/config.toml
+#   - kind, kubectl, helm
 #
 # Usage:
-#   # Install kind (once)
-#   curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-#   chmod +x ./kind && sudo mv ./kind /usr/local/bin/
+#   ./dockerfiles/dev-setup.sh kind
 #
-#   # Create cluster
-#   kind create cluster --name flowsim --config dockerfiles/kind-multi-node.yaml
-#
-#   # Install NVIDIA device plugin (exposes GPUs to K8s)
-#   kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml
-#
-#   # Verify
-#   kubectl get nodes
-#   kubectl describe node flowsim-worker  | grep nvidia.com/gpu
-#   kubectl describe node flowsim-worker2 | grep nvidia.com/gpu
-#
-#   # Init FlowSim
-#   flowsim init k8s --kubeconfig ~/.kube/config \
-#       --context kind-flowsim --namespace default --force
-#
-#   # Submit a profiling job
-#   flowsim submit --scheduler k8s --collect perf \
-#       --model-path /models/Qwen-7B --gpus 1
-#
-#   # Teardown
-#   kind delete cluster --name flowsim
+# Teardown:
+#   ./dockerfiles/dev-teardown.sh kind
 
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -36,29 +24,14 @@ apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
 
+  # Worker — GPU 0 only
   - role: worker
     extraMounts:
-      # Pass GPU 0 into this node
-      - hostPath: /dev/nvidia0
-        containerPath: /dev/nvidia0
-      - hostPath: /dev/nvidiactl
-        containerPath: /dev/nvidiactl
-      - hostPath: /dev/nvidia-uvm
-        containerPath: /dev/nvidia-uvm
-      # Mount model weights (adjust to your path)
+      - hostPath: /dev/null
+        containerPath: /var/run/nvidia-container-devices/0
       - hostPath: /home/administrator/zhangt
         containerPath: /workspace
         readOnly: true
-
-  - role: worker
-    extraMounts:
-      # Pass GPU 1 into this node
-      - hostPath: /dev/nvidia1
-        containerPath: /dev/nvidia1
-      - hostPath: /dev/nvidiactl
-        containerPath: /dev/nvidiactl
-      - hostPath: /dev/nvidia-uvm
-        containerPath: /dev/nvidia-uvm
-      - hostPath: /home/administrator/zhangt
-        containerPath: /workspace
-        readOnly: true
+      # Writable mount so K8s pods can write traces directly to host
+      - hostPath: /home/administrator/zhangt/FlowSim/stage_traces
+        containerPath: /host-stage-traces

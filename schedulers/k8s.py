@@ -49,6 +49,9 @@ class K8sScheduler(BaseScheduler):
         ServiceAccount name for the pod.
     shm_size : str
         Size of ``/dev/shm`` (shared memory).  Defaults to ``"16Gi"``.
+    runtime_class_name : str, optional
+        Kubernetes RuntimeClass name for the pod (e.g., ``"nvidia"`` for
+        CDI-based GPU injection in Kind clusters).
     """
 
     def __init__(
@@ -62,6 +65,7 @@ class K8sScheduler(BaseScheduler):
         node_selector: dict[str, str] | None = None,
         service_account: str = "",
         shm_size: str = "16Gi",
+        runtime_class_name: str = "",
     ) -> None:
         self.namespace = namespace
         self.kubeconfig = kubeconfig
@@ -71,6 +75,7 @@ class K8sScheduler(BaseScheduler):
         self.node_selector = node_selector or {}
         self.service_account = service_account
         self.shm_size = shm_size
+        self.runtime_class_name = runtime_class_name
 
     def render(self, spec: ProfileJobSpec) -> str:
         return _dump(self._build_job_dict(spec))
@@ -92,7 +97,9 @@ class K8sScheduler(BaseScheduler):
             volume_mounts.append({"name": "output", "mountPath": spec.output_dir})
             volumes.append({"name": "output", "persistentVolumeClaim": {"claimName": self.pvc_name}})
         elif self.host_output_dir:
-            volume_mounts.append({"name": "output", "mountPath": spec.output_dir})
+            # Mount at base traces dir so the full directory structure
+            # (e.g. k8s/{timestamp}/bs1_...) is preserved on the host.
+            volume_mounts.append({"name": "output", "mountPath": "/flowsim/stage_traces"})
             volumes.append({"name": "output", "hostPath": {"path": self.host_output_dir, "type": "DirectoryOrCreate"}})
 
         container = {
@@ -114,6 +121,8 @@ class K8sScheduler(BaseScheduler):
             "containers": [container],
             "volumes": volumes,
         }
+        if self.runtime_class_name:
+            pod_spec["runtimeClassName"] = self.runtime_class_name
         if self.service_account:
             pod_spec["serviceAccountName"] = self.service_account
         if self.node_selector:

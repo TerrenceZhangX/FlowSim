@@ -319,12 +319,12 @@ class BaseKernelInfoParser:
                 else:
                     # Case 2: If no ext_id, we need to find the shape from user annotations
                     # Key Identification Methodology: Annotation is overlapped with kernel
+                    dims_anno = "N/A"
+                    input_type_anno = "N/A"
+                    desc_anno = ""
                     for anno_idx, anno in enumerate(annotation_events):
                         if anno_idx in used_annotations:
                             continue
-                        dims_anno = "N/A"
-                        input_type_anno = "N/A"
-                        desc_anno = ""
                         if "ProfilerStep" in anno.get("name", ""):
                             continue
                         anno_start = anno.get("ts", 0)
