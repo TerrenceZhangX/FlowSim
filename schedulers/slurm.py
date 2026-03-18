@@ -6,11 +6,11 @@
 
 Two submission modes are supported:
 
-* **rest** (default) — POST the script to a slurmrestd endpoint.
-  Requires ``rest_url`` and ``jwt_token``.
-* **cli** — pipe the script to ``sbatch`` via subprocess.
+* **cli** (default) — pipe the script to ``sbatch`` via subprocess.
   Requires ``sbatch``/``squeue``/``scancel`` on PATH (or reachable
   via ``cli_prefix``, e.g. ``"docker exec slurmctld"``).
+* **rest** (deprecated) — POST the script to a slurmrestd endpoint.
+  Requires ``rest_url`` and ``jwt_token``.
 """
 
 from __future__ import annotations
@@ -66,8 +66,8 @@ class SlurmScheduler(BaseScheduler):
     extra_sbatch : list[str]
         Additional ``#SBATCH`` lines, each *without* the ``#SBATCH`` prefix.
     submit_via : str
-        ``"rest"`` (default) — use slurmrestd REST API.
-        ``"cli"``  — use ``sbatch`` / ``squeue`` / ``scancel`` subprocess.
+        ``"cli"``  (default) — use ``sbatch`` / ``squeue`` / ``scancel`` subprocess.
+        ``"rest"`` (deprecated) — use slurmrestd REST API.
     cli_prefix : str
         Shell prefix for CLI commands (e.g. ``"docker exec -i slurmctld"``).
         Only used when ``submit_via="cli"``.
@@ -88,7 +88,7 @@ class SlurmScheduler(BaseScheduler):
         container_mounts: str = "",
         modules: list[str] | None = None,
         extra_sbatch: list[str] | None = None,
-        submit_via: str = "rest",
+        submit_via: str = "cli",
         cli_prefix: str = "",
     ) -> None:
         self.partition = partition
@@ -105,6 +105,16 @@ class SlurmScheduler(BaseScheduler):
         self.extra_sbatch = extra_sbatch or []
         self.submit_via = submit_via
         self.cli_prefix = cli_prefix
+
+        if self.submit_via != "cli":
+            import warnings
+            warnings.warn(
+                "Slurm REST mode (slurmrestd) is deprecated and will be "
+                "removed in a future release. Use submit_via='cli' "
+                "(sbatch) instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     def render(self, spec: ProfileJobSpec) -> str:
         job_name = spec.default_job_name()
@@ -415,6 +425,8 @@ class SlurmScheduler(BaseScheduler):
         }
 
     def _logs_cli(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+        # TODO: read actual Slurm log file (StdOut from scontrol)
+        # and support tail/follow properly.
         info = self._status_cli(job_id)
         return info["message"]
 

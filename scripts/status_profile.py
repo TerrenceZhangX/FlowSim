@@ -29,17 +29,15 @@ Cancel a job::
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
-from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_jwt_token
+from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default, resolve_jwt_token
 from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
 
 
-def _d(env_var: str, cfg: dict, key: str, fallback: str = "") -> str:
-    return os.environ.get(env_var, "") or cfg_get(cfg, key, fallback)
+_d = resolve_default
 
 
 def _add_scheduler_args(p: argparse.ArgumentParser) -> None:
@@ -101,7 +99,7 @@ def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> 
         p.add_argument(
             "--slurm-submit-via",
             choices=["rest", "cli"],
-            default=cfg_get(slurm_cfg, "submit_via", "rest"),
+            default=cfg_get(slurm_cfg, "submit_via", "cli"),
         )
         p.add_argument(
             "--slurm-cli-prefix",

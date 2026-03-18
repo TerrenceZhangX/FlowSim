@@ -51,15 +51,15 @@ import os
 import sys
 
 from schedulers.base import ProfileJobSpec
-from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_jwt_token
+from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default, resolve_jwt_token
 from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
+from scripts import load_sweep_file, parse_sweep_point
 
 
-def _d(env_var: str, cfg: dict, key: str, fallback: str = "") -> str:
-    """Resolve default: env var > config file > fallback."""
-    return os.environ.get(env_var, "") or cfg_get(cfg, key, fallback)
+# Short alias for argparse default= expressions
+_d = resolve_default
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -311,8 +311,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         slurm.add_argument(
             "--slurm-submit-via",
             choices=["rest", "cli"],
-            default=cfg_get(slurm_cfg, "submit_via", "rest"),
-            help="Submission mode: rest (slurmrestd) or cli (sbatch subprocess)",
+            default=cfg_get(slurm_cfg, "submit_via", "cli"),
+            help="Submission mode: cli (sbatch subprocess) or rest (slurmrestd, deprecated)",
         )
         slurm.add_argument(
             "--slurm-cli-prefix",
@@ -327,26 +327,14 @@ def _parse_sweep_points(args) -> list[tuple[int, int, int]]:
     """Resolve sweep points from --sweep / --sweep-file args."""
     if args.sweep and args.sweep_file:
         sys.exit("Error: --sweep and --sweep-file are mutually exclusive")
-    points: list[tuple[int, int, int]] = []
-    raw: list[str] = []
-    if args.sweep:
-        raw = args.sweep
-    elif args.sweep_file:
-        with open(args.sweep_file) as f:
-            raw = [
-                line.strip()
-                for line in f
-                if line.strip() and not line.strip().startswith("#")
-            ]
-    for s in raw:
-        parts = s.strip().split(":")
-        if len(parts) != 3:
-            sys.exit(f"Bad sweep point {s!r}: expected BS:INPUT_LEN:CTX")
-        try:
-            points.append((int(parts[0]), int(parts[1]), int(parts[2])))
-        except ValueError:
-            sys.exit(f"Bad sweep point {s!r}: all three values must be integers")
-    return points
+    try:
+        if args.sweep:
+            return [parse_sweep_point(s) for s in args.sweep]
+        if args.sweep_file:
+            return load_sweep_file(args.sweep_file)
+    except ValueError as e:
+        sys.exit(str(e))
+    return []
 
 
 def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:

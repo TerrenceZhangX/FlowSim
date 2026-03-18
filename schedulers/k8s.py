@@ -148,38 +148,9 @@ class K8sScheduler(BaseScheduler):
 
     def submit(self, spec: ProfileJobSpec) -> JobResult:
         """Submit via the ``kubernetes`` Python client (``pip install kubernetes``)."""
-        try:
-            from kubernetes import client as k8s_client, config as k8s_config
-        except ImportError:
-            raise RuntimeError(
-                "The 'kubernetes' package is required for --submit. "
-                "Install it with: pip install kubernetes"
-            )
-
-        # Load kubeconfig / in-cluster config
-        config_kwargs: dict = {}
-        if self.kubeconfig:
-            config_kwargs["config_file"] = self.kubeconfig
-        if self.context:
-            config_kwargs["context"] = self.context
-
-        try:
-            k8s_config.load_kube_config(**config_kwargs)
-        except k8s_config.ConfigException:
-            try:
-                k8s_config.load_incluster_config()
-            except k8s_config.ConfigException:
-                hint = ""
-                if not self.kubeconfig:
-                    hint = " Try --k8s-kubeconfig /path/to/kubeconfig."
-                raise RuntimeError(
-                    "No valid Kubernetes configuration found. "
-                    "Checked kubeconfig file and in-cluster environment."
-                    + hint
-                )
+        batch_api, _ = self._load_k8s()
 
         body = self._build_job_dict(spec)
-        batch_api = k8s_client.BatchV1Api()
         resp = batch_api.create_namespaced_job(
             namespace=self.namespace,
             body=body,
@@ -197,8 +168,17 @@ class K8sScheduler(BaseScheduler):
     # -----------------------------------------------------------------
 
     def _load_k8s(self):
-        """Load kubeconfig and return (BatchV1Api, CoreV1Api)."""
-        from kubernetes import client as k8s_client, config as k8s_config
+        """Load kubeconfig and return (BatchV1Api, CoreV1Api).
+
+        Raises RuntimeError with actionable message on failure.
+        """
+        try:
+            from kubernetes import client as k8s_client, config as k8s_config
+        except ImportError:
+            raise RuntimeError(
+                "The 'kubernetes' package is required. "
+                "Install it with: pip install kubernetes"
+            )
 
         config_kwargs: dict = {}
         if self.kubeconfig:
@@ -208,7 +188,14 @@ class K8sScheduler(BaseScheduler):
         try:
             k8s_config.load_kube_config(**config_kwargs)
         except k8s_config.ConfigException:
-            k8s_config.load_incluster_config()
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                hint = " Try --k8s-kubeconfig /path/to/kubeconfig." if not self.kubeconfig else ""
+                raise RuntimeError(
+                    "No valid Kubernetes configuration found. "
+                    "Checked kubeconfig file and in-cluster environment." + hint
+                )
 
         return k8s_client.BatchV1Api(), k8s_client.CoreV1Api()
 
@@ -226,11 +213,6 @@ class K8sScheduler(BaseScheduler):
 
     def status(self, job_id: str) -> dict:
         """Query K8s Job status by job name."""
-        try:
-            from kubernetes import client as k8s_client
-        except ImportError:
-            raise RuntimeError("pip install kubernetes")
-
         batch_api, core_api = self._load_k8s()
 
         job = batch_api.read_namespaced_job(name=job_id, namespace=self.namespace)
@@ -278,11 +260,6 @@ class K8sScheduler(BaseScheduler):
 
     def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """Show where logs are and how to access them for a K8s Job."""
-        try:
-            from kubernetes import client as k8s_client
-        except ImportError:
-            raise RuntimeError("pip install kubernetes")
-
         _, core_api = self._load_k8s()
 
         pods = core_api.list_namespaced_pod(

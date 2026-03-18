@@ -7,9 +7,13 @@ The profiling runs inside the FlowSim Docker image with GPU access.
 
 from __future__ import annotations
 
+import glob
 import os
+import re
+import shlex
 import subprocess
 import sys
+import threading
 import time
 
 from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
@@ -17,7 +21,6 @@ from schedulers.base import BaseScheduler, JobResult, ProfileJobSpec
 
 def _shell_quote(s: str) -> str:
     """Quote a string for safe embedding in a bash -c '...' invocation."""
-    import shlex
     return shlex.quote(s)
 
 
@@ -160,7 +163,6 @@ class LocalScheduler(BaseScheduler):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            import threading
 
             def _tee(src, dest_file, dest_stream):
                 for line in src:
@@ -217,7 +219,6 @@ class LocalScheduler(BaseScheduler):
 
     def _find_log_dirs(self) -> list[str]:
         """Find all log directories under stage_traces/{scheduler}/*/logs/."""
-        import glob
         base = os.path.join(self.workdir, "stage_traces", "local")
         # New layout: stage_traces/local/{ts}/logs/
         dirs = sorted(glob.glob(os.path.join(base, "*/logs")))
@@ -232,8 +233,6 @@ class LocalScheduler(BaseScheduler):
 
         ``job_id`` is the job name prefix used in log filenames.
         """
-        import glob
-
         matches = []
         for log_dir in self._find_log_dirs():
             matches.extend(sorted(glob.glob(
@@ -264,8 +263,6 @@ class LocalScheduler(BaseScheduler):
 
     def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
         """List log files for a local job and print access commands."""
-        import glob
-
         matches = []
         for log_dir in self._find_log_dirs():
             matches.extend(sorted(glob.glob(
@@ -317,9 +314,6 @@ class LocalScheduler(BaseScheduler):
 
     def list_jobs(self, *, status_filter: str = "") -> list[dict]:
         """List local jobs by scanning log files."""
-        import glob
-        import re
-
         matches = []
         for log_dir in self._find_log_dirs():
             matches.extend(sorted(glob.glob(
@@ -340,9 +334,6 @@ class LocalScheduler(BaseScheduler):
             stderr_size = os.path.getsize(stderr) if os.path.exists(stderr) else 0
             # If stderr has content, might have failed; otherwise completed
             state = "Completed"
-            if stderr_size > 0:
-                # Check if there's an error indicator in stderr
-                state = "Completed"  # local jobs are synchronous; if log exists, it finished
             jobs.append({
                 "job_id": name,
                 "name": name,

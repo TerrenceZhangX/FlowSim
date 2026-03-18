@@ -107,6 +107,7 @@ from utils.cross_rank_agg import (
 )
 from utils.net import wait_for_port
 from utils.shape_merge import merge_shapes_dir
+from scripts import load_sweep_file, parse_sweep_point
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -746,43 +747,18 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _parse_sweep_point(s: str) -> tuple[int, int, int]:
-    """Parse a ``BS:INPUT_LEN:CTX`` string into an int 3-tuple."""
-    parts = s.strip().split(":")
-    if len(parts) != 3:
-        raise ValueError(
-            f"Bad sweep point {s!r}: expected BS:INPUT_LEN:CTX "
-            f"(e.g. 1:2048:0)"
-        )
-    try:
-        return int(parts[0]), int(parts[1]), int(parts[2])
-    except ValueError:
-        raise ValueError(
-            f"Bad sweep point {s!r}: all three values must be integers"
-        )
-
-
 def _load_sweep_points(args) -> list[tuple[int, int, int]]:
     """Resolve sweep points from --sweep, --sweep-file, or single-point args."""
     if args.sweep and args.sweep_file:
         print("[ERROR] --sweep and --sweep-file are mutually exclusive")
         raise SystemExit(1)
 
-    points: list[tuple[int, int, int]] = []
     if args.sweep:
-        for s in args.sweep:
-            points.append(_parse_sweep_point(s))
-    elif args.sweep_file:
-        with open(args.sweep_file) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                points.append(_parse_sweep_point(line))
-    else:
-        # Single-point from --bs / --input-len / --existing-ctx
-        points.append((args.bs, args.input_len, args.existing_ctx))
-    return points
+        return [parse_sweep_point(s) for s in args.sweep]
+    if args.sweep_file:
+        return load_sweep_file(args.sweep_file)
+    # Single-point from --bs / --input-len / --existing-ctx
+    return [(args.bs, args.input_len, args.existing_ctx)]
 
 
 # ---------------------------------------------------------------------------
@@ -823,11 +799,11 @@ def _start_server(
     return proc
 
 
-def _run_perf(args, summary: list[dict], *, bs: int = 0, input_len: int = 0, existing_ctx: int = 0) -> int:
+def _run_perf(args, summary: list[dict], *, bs: Optional[int] = None, input_len: Optional[int] = None, existing_ctx: Optional[int] = None) -> int:
     """Collect traces for a single (bs, input_len, existing_ctx, decode_tokens) point."""
-    bs = bs or args.bs
-    input_len = input_len or args.input_len
-    existing_ctx = existing_ctx if (bs != 0) else args.existing_ctx
+    bs = bs if bs is not None else args.bs
+    input_len = input_len if input_len is not None else args.input_len
+    existing_ctx = existing_ctx if existing_ctx is not None else args.existing_ctx
 
     tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
     sub_dir = os.path.join(args.output_dir, tag)

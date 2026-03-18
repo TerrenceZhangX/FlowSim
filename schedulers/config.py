@@ -123,3 +123,8 @@ def cfg_get(cfg: dict, key: str, fallback: str = "") -> str:
     if val is not None:
         return str(val)
     return fallback
+
+
+def resolve_default(env_var: str, cfg: dict, key: str, fallback: str = "") -> str:
+    """Resolve a config value: env var > config file > fallback."""
+    return os.environ.get(env_var, "") or cfg_get(cfg, key, fallback)

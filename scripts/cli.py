@@ -42,12 +42,17 @@ def _init_k8s_parser(sub: argparse._SubParsersAction) -> None:
 
 def _init_slurm_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("slurm", help="Configure Slurm scheduler")
-    p.add_argument("--rest-url", required=True,
-                   help="slurmrestd endpoint URL (REQUIRED)")
     p.add_argument("--partition", required=True,
                    help="Slurm partition (REQUIRED)")
-    p.add_argument("--account", required=True,
-                   help="Slurm account (REQUIRED)")
+    p.add_argument("--account", default="",
+                   help="Slurm account")
+    p.add_argument("--submit-via", default="cli",
+                   choices=["cli", "rest"],
+                   help="Submission mode (default: cli)")
+    p.add_argument("--cli-prefix", default="",
+                   help='CLI mode prefix, e.g. "docker exec -i slurmctld"')
+    p.add_argument("--rest-url", default="",
+                   help="slurmrestd endpoint URL (REST mode only, deprecated)")
     p.add_argument("--jwt-token-cmd", default="",
                    help='Command to get JWT token, e.g. "scontrol token lifespan=3600"')
     p.add_argument("--jwt-token", default="",
@@ -107,10 +112,12 @@ def _cmd_init(argv: list[str]) -> int:
         dst = _CONFIG_DIR / "k8s.yaml"
 
     elif args.scheduler == "slurm":
-        if not args.jwt_token_cmd and not args.jwt_token:
-            print("Error: provide --jwt-token-cmd or --jwt-token", file=sys.stderr)
+        if args.submit_via == "rest" and not args.jwt_token_cmd and not args.jwt_token:
+            print("Error: REST mode requires --jwt-token-cmd or --jwt-token", file=sys.stderr)
             return 1
         cfg = {
+            "submit_via": args.submit_via,
+            "cli_prefix": args.cli_prefix,
             "rest_url": args.rest_url,
             "jwt_token_cmd": args.jwt_token_cmd,
             "jwt_token": args.jwt_token,
