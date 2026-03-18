@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default, resolve_jwt_token
+from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default
 from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
@@ -81,39 +81,9 @@ def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> 
 
     elif scheduler == "slurm":
         p.add_argument(
-            "--slurm-rest-url",
-            default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
-        )
-        p.add_argument(
-            "--slurm-jwt-token",
-            default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
-        )
-        p.add_argument(
-            "--slurm-api-version",
-            default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
-        )
-        p.add_argument(
-            "--slurm-no-verify-ssl",
-            action="store_true",
-        )
-        p.add_argument(
-            "--slurm-submit-via",
-            choices=["rest", "cli"],
-            default=cfg_get(slurm_cfg, "submit_via", "cli"),
-        )
-        p.add_argument(
             "--slurm-cli-prefix",
             default=cfg_get(slurm_cfg, "cli_prefix", ""),
         )
-
-
-def _resolve_slurm_jwt(args: argparse.Namespace) -> None:
-    """Resolve Slurm JWT from config if not provided."""
-    if args.scheduler == "slurm" and not args.slurm_jwt_token:
-        slurm_cfg = load_slurm_config()
-        token = resolve_jwt_token(slurm_cfg)
-        if token:
-            args.slurm_jwt_token = token
 
 
 def _build_scheduler(args: argparse.Namespace):
@@ -129,11 +99,6 @@ def _build_scheduler(args: argparse.Namespace):
         )
     else:
         return SlurmScheduler(
-            rest_url=args.slurm_rest_url,
-            jwt_token=args.slurm_jwt_token,
-            api_version=args.slurm_api_version,
-            verify_ssl=not args.slurm_no_verify_ssl,
-            submit_via=args.slurm_submit_via,
             cli_prefix=args.slurm_cli_prefix,
         )
 
@@ -153,7 +118,6 @@ def main_status(argv: list[str] | None = None) -> None:
     p.add_argument("--job", required=True, help="Job name or ID")
     args = _parse_two_pass(p, argv)
 
-    _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
     try:
         info = scheduler.status(args.job)
@@ -172,7 +136,6 @@ def main_logs(argv: list[str] | None = None) -> None:
     p.add_argument("--follow", "-f", action="store_true", help="Follow log output")
     args = _parse_two_pass(p, argv)
 
-    _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
     try:
         text = scheduler.logs(args.job, tail=args.tail, follow=args.follow)
@@ -188,7 +151,6 @@ def main_list(argv: list[str] | None = None) -> None:
     p.add_argument("--status", default="", help="Filter by job state (e.g. Running, Succeeded, PENDING)")
     args = _parse_two_pass(p, argv)
 
-    _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
     try:
         jobs = scheduler.list_jobs(status_filter=args.status)
@@ -214,7 +176,6 @@ def main_cancel(argv: list[str] | None = None) -> None:
     p.add_argument("--job", required=True, help="Job name or ID to cancel")
     args = _parse_two_pass(p, argv)
 
-    _resolve_slurm_jwt(args)
     scheduler = _build_scheduler(args)
     try:
         msg = scheduler.cancel(args.job)

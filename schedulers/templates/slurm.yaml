@@ -8,21 +8,12 @@
 #
 # CLI flags and env vars can override individual values.
 
-# REQUIRED — submission mode
-submit_via: "cli"           # "cli" (sbatch, default) or "rest" (deprecated)
-cli_prefix: ""              # e.g. "docker exec -i slurmctld" (optional)
-
 # REQUIRED — cluster settings
 partition: ""               # e.g. gpu-h100
 account: ""                 # e.g. my-project
 
-# REST mode (deprecated) — only needed if submit_via: rest
-rest_url: ""                # e.g. https://slurm.corp.com:6820
-# jwt_token: ""             # not recommended — stored in plaintext
-jwt_token_cmd: ""           # e.g. "scontrol token lifespan=3600"
-
 # Optional
-api_version: "v0.0.40"
+cli_prefix: ""              # e.g. "docker exec -i slurmctld"
 time: "02:00:00"
 constraint: ""
 container_runtime: "none"   # docker | enroot | none

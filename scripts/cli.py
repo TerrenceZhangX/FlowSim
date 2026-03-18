@@ -3,7 +3,7 @@
 Usage::
 
     flowsim init k8s --kubeconfig ~/.kube/config --namespace ml-team ...
-    flowsim init slurm --rest-url https://slurm:6820 --partition gpu ...
+    flowsim init slurm --partition gpu --account proj ...
     flowsim submit --scheduler k8s --collect perf --model-path ...
     flowsim submit ... --dry-run   # debug: preview manifest
 """
@@ -46,19 +46,8 @@ def _init_slurm_parser(sub: argparse._SubParsersAction) -> None:
                    help="Slurm partition (REQUIRED)")
     p.add_argument("--account", default="",
                    help="Slurm account")
-    p.add_argument("--submit-via", default="cli",
-                   choices=["cli", "rest"],
-                   help="Submission mode (default: cli)")
     p.add_argument("--cli-prefix", default="",
                    help='CLI mode prefix, e.g. "docker exec -i slurmctld"')
-    p.add_argument("--rest-url", default="",
-                   help="slurmrestd endpoint URL (REST mode only, deprecated)")
-    p.add_argument("--jwt-token-cmd", default="",
-                   help='Command to get JWT token, e.g. "scontrol token lifespan=3600"')
-    p.add_argument("--jwt-token", default="",
-                   help="Static JWT token (not recommended)")
-    p.add_argument("--api-version", default="v0.0.40",
-                   help="slurmrestd API version (default: v0.0.40)")
     p.add_argument("--time", default="02:00:00",
                    help="Job time limit (default: 02:00:00)")
     p.add_argument("--constraint", default="",
@@ -82,8 +71,7 @@ def _cmd_init(argv: list[str]) -> int:
             "Configure a scheduler and save to ~/.flowsim/.\n\n"
             "Examples:\n"
             "  flowsim init k8s --kubeconfig ~/.kube/config --namespace ml-team\n"
-            "  flowsim init slurm --rest-url https://slurm:6820 "
-            "--partition gpu --account proj"
+            "  flowsim init slurm --partition gpu --account proj"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -112,18 +100,10 @@ def _cmd_init(argv: list[str]) -> int:
         dst = _CONFIG_DIR / "k8s.yaml"
 
     elif args.scheduler == "slurm":
-        if args.submit_via == "rest" and not args.jwt_token_cmd and not args.jwt_token:
-            print("Error: REST mode requires --jwt-token-cmd or --jwt-token", file=sys.stderr)
-            return 1
         cfg = {
-            "submit_via": args.submit_via,
             "cli_prefix": args.cli_prefix,
-            "rest_url": args.rest_url,
-            "jwt_token_cmd": args.jwt_token_cmd,
-            "jwt_token": args.jwt_token,
             "partition": args.partition,
             "account": args.account,
-            "api_version": args.api_version,
             "time": args.time,
             "constraint": args.constraint,
             "container_runtime": args.container_runtime,

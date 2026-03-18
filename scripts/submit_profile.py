@@ -51,7 +51,7 @@ import os
 import sys
 
 from schedulers.base import ProfileJobSpec
-from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default, resolve_jwt_token
+from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default
 from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
@@ -257,26 +257,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="Wall time limit (env: FLOWSIM_SLURM_TIME)",
         )
         slurm.add_argument(
-            "--slurm-rest-url",
-            default=_d("FLOWSIM_SLURM_REST_URL", slurm_cfg, "rest_url", ""),
-            help="slurmrestd base URL (env: FLOWSIM_SLURM_REST_URL)",
-        )
-        slurm.add_argument(
-            "--slurm-jwt-token",
-            default=_d("FLOWSIM_SLURM_JWT_TOKEN", slurm_cfg, "jwt_token", ""),
-            help="JWT token for slurmrestd (env: FLOWSIM_SLURM_JWT_TOKEN)",
-        )
-        slurm.add_argument(
-            "--slurm-api-version",
-            default=_d("FLOWSIM_SLURM_API_VERSION", slurm_cfg, "api_version", "v0.0.40"),
-            help="slurmrestd API version (env: FLOWSIM_SLURM_API_VERSION)",
-        )
-        slurm.add_argument(
-            "--slurm-no-verify-ssl",
-            action="store_true",
-            help="Skip TLS certificate verification for slurmrestd",
-        )
-        slurm.add_argument(
             "--slurm-account",
             default=cfg_get(slurm_cfg, "account", ""),
         )
@@ -307,12 +287,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             default=[],
             metavar="DIRECTIVE",
             help="Extra #SBATCH directives (repeatable, without prefix)",
-        )
-        slurm.add_argument(
-            "--slurm-submit-via",
-            choices=["rest", "cli"],
-            default=cfg_get(slurm_cfg, "submit_via", "cli"),
-            help="Submission mode: cli (sbatch subprocess) or rest (slurmrestd, deprecated)",
         )
         slurm.add_argument(
             "--slurm-cli-prefix",
@@ -394,17 +368,12 @@ def _build_scheduler(args: argparse.Namespace):
         return SlurmScheduler(
             partition=args.slurm_partition,
             time_limit=args.slurm_time,
-            rest_url=args.slurm_rest_url,
-            jwt_token=args.slurm_jwt_token,
-            api_version=args.slurm_api_version,
-            verify_ssl=not args.slurm_no_verify_ssl,
             account=args.slurm_account,
             constraint=args.slurm_constraint,
             container_runtime=args.slurm_container_runtime,
             container_mounts=args.slurm_container_mounts,
             modules=args.slurm_module,
             extra_sbatch=args.slurm_extra_sbatch,
-            submit_via=args.slurm_submit_via,
             cli_prefix=args.slurm_cli_prefix,
         )
 
@@ -423,13 +392,6 @@ def main(argv: list[str] | None = None) -> None:
             args.output_dir = f"/flowsim/stage_traces/slurm/{_ts}"
         else:
             args.output_dir = f"/flowsim/stage_traces/k8s/{_ts}"
-
-    # Resolve Slurm JWT token from jwt_token_cmd in config if needed
-    if args.scheduler == "slurm" and not args.slurm_jwt_token:
-        slurm_cfg = load_slurm_config()
-        token = resolve_jwt_token(slurm_cfg)
-        if token:
-            args.slurm_jwt_token = token
 
     # Validate required connection params before submit
     if not args.dry_run and args.scheduler not in ("local",):
@@ -523,28 +485,11 @@ def _validate_connection(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
     elif args.scheduler == "slurm":
-        if args.slurm_submit_via == "cli":
-            # CLI mode only needs partition
-            if not args.slurm_partition:
-                sys.exit(
-                    "Error: missing required Slurm config:\n"
-                    "  - partition (--slurm-partition)\n\n"
-                    f"Set it in ~/.flowsim/slurm.yaml or via CLI flag.\n"
-                    + _INIT_HINT
-                )
-            return
-        missing = []
-        if not args.slurm_rest_url:
-            missing.append("rest_url (--slurm-rest-url)")
-        if not args.slurm_jwt_token:
-            missing.append("jwt_token/jwt_token_cmd (--slurm-jwt-token)")
         if not args.slurm_partition:
-            missing.append("partition (--slurm-partition)")
-        if missing:
             sys.exit(
                 "Error: missing required Slurm config:\n"
-                + "\n".join(f"  - {m}" for m in missing)
-                + f"\n\nSet them in ~/.flowsim/slurm.yaml or via CLI flags.\n"
+                "  - partition (--slurm-partition)\n\n"
+                f"Set it in ~/.flowsim/slurm.yaml or via CLI flag.\n"
                 + _INIT_HINT
             )
 

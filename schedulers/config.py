@@ -15,17 +15,11 @@ Priority (highest → lowest):
 
 Template files are in ``schedulers/templates/k8s.yaml`` and
 ``schedulers/templates/slurm.yaml``.  Copy to ``~/.flowsim/`` and edit.
-
-For Slurm, use ``jwt_token_cmd`` instead of ``jwt_token`` to avoid
-storing secrets in plaintext.  The command is executed at submit time
-and its stdout is used as the token.
 """
 
 from __future__ import annotations
 
 import os
-import shlex
-import subprocess
 from pathlib import Path
 
 # Optional: try PyYAML, fall back to JSON
@@ -92,29 +86,6 @@ def load_slurm_config() -> dict:
         return _load_yaml(path)
     except Exception:
         return {}
-
-
-def resolve_jwt_token(slurm_cfg: dict) -> str:
-    """Get the JWT token from config, executing jwt_token_cmd if needed."""
-    token = slurm_cfg.get("jwt_token", "")
-    if token:
-        return str(token)
-
-    cmd = slurm_cfg.get("jwt_token_cmd", "")
-    if cmd:
-        try:
-            result = subprocess.run(
-                shlex.split(cmd),
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except (FileNotFoundError, OSError):
-            pass
-
-    return ""
 
 
 def cfg_get(cfg: dict, key: str, fallback: str = "") -> str:

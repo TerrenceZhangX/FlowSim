@@ -269,10 +269,6 @@ class TestSlurmScheduler:
         script = sched.render(spec)
         assert "#SBATCH --constraint=gpu80g" in script
 
-    def test_time_parse_minutes(self):
-        sched = SlurmScheduler(partition="gpu", time_limit="02:30:00")
-        assert sched._parse_time_minutes() == 150
-
 
 # =========================================================================
 # LocalScheduler.render
@@ -350,7 +346,7 @@ class TestCLIInit:
             _cmd_init(["slurm", "--help"])
         assert exc_info.value.code == 0
         out = capsys.readouterr().out
-        assert "--rest-url" in out
+        assert "--cli-prefix" in out
         assert "--partition" in out
 
     def test_init_k8s_missing_required(self):
@@ -396,16 +392,13 @@ class TestCLIInit:
             from scripts.cli import _cmd_init
             rc = _cmd_init([
                 "slurm",
-                "--rest-url", "http://localhost:6820",
                 "--partition", "gpu",
                 "--account", "proj",
-                "--jwt-token", "fake-token",
             ])
         assert rc == 0
         cfg_file = config_dir / "slurm.yaml"
         assert cfg_file.exists()
         cfg = yaml.safe_load(cfg_file.read_text())
-        assert cfg["rest_url"] == "http://localhost:6820"
         assert cfg["partition"] == "gpu"
         assert cfg["account"] == "proj"
 
@@ -418,10 +411,8 @@ class TestCLIInit:
             from scripts.cli import _cmd_init
             rc = _cmd_init([
                 "slurm",
-                "--rest-url", "http://localhost:6820",
                 "--partition", "gpu",
                 "--account", "proj",
-                "--jwt-token", "tok",
             ])
         assert rc != 0  # should refuse
 
@@ -434,15 +425,13 @@ class TestCLIInit:
             from scripts.cli import _cmd_init
             rc = _cmd_init([
                 "slurm",
-                "--rest-url", "http://localhost:6820",
                 "--partition", "gpu",
                 "--account", "proj",
-                "--jwt-token", "tok",
                 "--force",
             ])
         assert rc == 0
         cfg = yaml.safe_load((config_dir / "slurm.yaml").read_text())
-        assert cfg["rest_url"] == "http://localhost:6820"
+        assert cfg["partition"] == "gpu"
 
 
 # =========================================================================
@@ -518,8 +507,6 @@ class TestCLISubmit:
             "--collect", "perf",
             "--model-path", "Qwen/Qwen3-8B",
             "--slurm-partition", "gpu",
-            "--slurm-rest-url", "http://fake:6820",
-            "--slurm-jwt-token", "fake-token",
             "--dry-run",
         )
         assert "#!/bin/bash" in out
@@ -559,31 +546,11 @@ class TestConfig:
 
     def test_save_and_load_yaml(self, tmp_path: Path):
         from schedulers.config import _save_yaml, _load_yaml
-        data = {"rest_url": "http://localhost:6820", "partition": "gpu"}
+        data = {"partition": "gpu", "account": "proj"}
         path = tmp_path / "test.yaml"
         _save_yaml(path, data)
         loaded = _load_yaml(path)
         assert loaded == data
-
-    def test_resolve_jwt_token_static(self):
-        from schedulers.config import resolve_jwt_token
-        cfg = {"jwt_token": "my-secret"}
-        assert resolve_jwt_token(cfg) == "my-secret"
-
-    def test_resolve_jwt_token_cmd(self):
-        from schedulers.config import resolve_jwt_token
-        cfg = {"jwt_token_cmd": "echo test-token-123"}
-        assert resolve_jwt_token(cfg) == "test-token-123"
-
-    def test_resolve_jwt_token_bad_cmd(self):
-        from schedulers.config import resolve_jwt_token
-        cfg = {"jwt_token_cmd": "/nonexistent/binary"}
-        # Should not raise, just return empty
-        assert resolve_jwt_token(cfg) == ""
-
-    def test_resolve_jwt_token_empty(self):
-        from schedulers.config import resolve_jwt_token
-        assert resolve_jwt_token({}) == ""
 
     def test_cfg_get(self):
         from schedulers.config import cfg_get
