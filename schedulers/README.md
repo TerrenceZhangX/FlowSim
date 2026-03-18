@@ -167,13 +167,13 @@ flowsim submit --scheduler k8s ... --dry-run
 
 ```bash
 # Start a Kind cluster (GPU passthrough + CDI mode)
-bash dockerfiles/dev-setup.sh kind
+bash tests/integration/infra/dev-setup.sh kind
 
 # Run K8s integration tests
 python -m pytest tests/integration/test_scheduler_local.py::TestK8sScheduler -v -x
 
 # Teardown
-bash dockerfiles/dev-teardown.sh kind
+bash tests/integration/infra/dev-teardown.sh kind
 ```
 
 ---
@@ -258,7 +258,7 @@ If Slurm commands are not on the local PATH, use `--slurm-cli-prefix` to specify
 
 ```bash
 # Start Slurm cluster (slurmctld + 1 compute node + 1 GPU)
-cd dockerfiles/
+cd tests/integration/infra/
 docker compose -f slurm-compose.yaml up -d
 
 # Check cluster status

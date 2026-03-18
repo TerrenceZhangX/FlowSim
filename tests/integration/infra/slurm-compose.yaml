@@ -1,7 +1,7 @@
 # Slurm test cluster — slurmctld + 2 compute nodes (GPU 0, GPU 1) + slurmrestd
 #
 # Usage:
-#   cd dockerfiles/
+#   cd tests/integration/infra/
 #   docker compose -f slurm-compose.yaml up -d
 #
 #   # Wait for cluster to be ready (~30s)
@@ -22,6 +22,8 @@
 #
 #   # Teardown
 #   docker compose -f slurm-compose.yaml down -v
+#   # Or from project root:
+#   docker compose -f tests/integration/infra/slurm-compose.yaml down -v
 
 x-slurm-base: &slurm-base
   build:

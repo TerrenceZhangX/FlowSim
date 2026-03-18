@@ -2,9 +2,9 @@
 # dev-teardown.sh — tear down FlowSim test clusters
 #
 # Usage:
-#   ./dockerfiles/dev-teardown.sh          # teardown both
-#   ./dockerfiles/dev-teardown.sh kind     # kind only
-#   ./dockerfiles/dev-teardown.sh slurm    # slurm only
+#   ./tests/integration/infra/dev-teardown.sh          # teardown both
+#   ./tests/integration/infra/dev-teardown.sh kind     # kind only
+#   ./tests/integration/infra/dev-teardown.sh slurm    # slurm only
 
 set -euo pipefail
 

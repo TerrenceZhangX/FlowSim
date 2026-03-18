@@ -13,10 +13,10 @@
 #   - kind, kubectl, helm
 #
 # Usage:
-#   ./dockerfiles/dev-setup.sh kind
+#   ./tests/integration/infra/dev-setup.sh kind
 #
 # Teardown:
-#   ./dockerfiles/dev-teardown.sh kind
+#   ./tests/integration/infra/dev-teardown.sh kind
 
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4

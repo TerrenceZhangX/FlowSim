@@ -2,12 +2,12 @@
 # dev-setup.sh — one-shot setup for FlowSim test clusters (kind + Slurm)
 #
 # Usage:
-#   ./dockerfiles/dev-setup.sh          # setup both kind + slurm
-#   ./dockerfiles/dev-setup.sh kind     # kind only
-#   ./dockerfiles/dev-setup.sh slurm    # slurm only
+#   ./tests/integration/infra/dev-setup.sh          # setup both kind + slurm
+#   ./tests/integration/infra/dev-setup.sh kind     # kind only
+#   ./tests/integration/infra/dev-setup.sh slurm    # slurm only
 #
 # Teardown:
-#   ./dockerfiles/dev-teardown.sh
+#   ./tests/integration/infra/dev-teardown.sh
 
 set -euo pipefail
 
@@ -355,4 +355,4 @@ case "${target}" in
 esac
 
 echo
-log "All done. Teardown with: ./dockerfiles/dev-teardown.sh"
+log "All done. Teardown with: ./tests/integration/infra/dev-teardown.sh"

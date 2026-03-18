@@ -17,7 +17,7 @@ Requirements
 * Docker with ``flowsim-image:latest`` built (for local tests).
 * A GPU-equipped host machine (local tests run on the physical host,
   NOT inside a Docker container).
-* ``dockerfiles/dev-setup.sh`` available (Kind and Slurm clusters are
+* ``tests/integration/infra/dev-setup.sh`` available (Kind and Slurm clusters are
   automatically created if missing).
 * ``schedulers/`` available on PYTHONPATH.
 
@@ -58,8 +58,8 @@ from schedulers.local import LocalScheduler
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
-_DEV_SETUP = os.path.join(_PROJECT_ROOT, "dockerfiles", "dev-setup.sh")
-_DEV_TEARDOWN = os.path.join(_PROJECT_ROOT, "dockerfiles", "dev-teardown.sh")
+_DEV_SETUP = os.path.join(_PROJECT_ROOT, "tests", "integration", "infra", "dev-setup.sh")
+_DEV_TEARDOWN = os.path.join(_PROJECT_ROOT, "tests", "integration", "infra", "dev-teardown.sh")
 
 MODEL = os.environ.get(
     "MODEL", "workload/models/configs/Qwen3-235B-A22B"
@@ -321,7 +321,7 @@ class TestLocalScheduler:
 # =====================================================================
 
 def _run_dev_setup(target: str) -> None:
-    """Run ``dockerfiles/dev-setup.sh <target>`` and assert success."""
+    """Run ``tests/integration/infra/dev-setup.sh <target>`` and assert success."""
     r = subprocess.run(
         ["bash", _DEV_SETUP, target],
         capture_output=True, text=True, cwd=_PROJECT_ROOT, timeout=300,
@@ -334,7 +334,7 @@ def _run_dev_setup(target: str) -> None:
 
 
 def _run_dev_teardown(target: str) -> None:
-    """Run ``dockerfiles/dev-teardown.sh <target>``."""
+    """Run ``tests/integration/infra/dev-teardown.sh <target>``."""
     subprocess.run(
         ["bash", _DEV_TEARDOWN, target],
         capture_output=True, text=True, cwd=_PROJECT_ROOT, timeout=120,

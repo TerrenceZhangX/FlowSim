@@ -13,8 +13,8 @@ Slurm:
 Priority (highest → lowest):
     CLI flag  >  env var  >  config file  >  built-in default
 
-Template files are in ``schedulers/templates/k8s.yaml`` and
-``schedulers/templates/slurm.yaml``.  Copy to ``~/.flowsim/`` and edit.
+Run ``flowsim init k8s`` or ``flowsim init slurm`` to generate
+a config under ``~/.flowsim/``.
 """
 
 from __future__ import annotations
