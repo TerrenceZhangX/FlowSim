@@ -285,9 +285,21 @@ Config files are stored in `~/.flowsim/` and generated via `flowsim init`:
 
 Parameter priority (highest to lowest):
 1. CLI flag (`--slurm-partition gpu`)
-2. Environment variable (`FLOWSIM_SLURM_PARTITION=gpu`)
+2. Environment variable (see table below)
 3. Config file (`~/.flowsim/slurm.yaml`)
 4. Built-in default
+
+### Supported Environment Variables
+
+| Variable | Overrides | Example |
+|----------|-----------|--------|
+| `KUBECONFIG` | `--k8s-kubeconfig` | `/home/user/.kube/config` |
+| `FLOWSIM_K8S_NAMESPACE` | `--k8s-namespace` | `ml-team` |
+| `FLOWSIM_K8S_CONTEXT` | `--k8s-context` | `kind-flowsim` |
+| `FLOWSIM_K8S_CONFIG` | Config file path | `/etc/flowsim/k8s.yaml` |
+| `FLOWSIM_SLURM_PARTITION` | `--slurm-partition` | `gpu-h100` |
+| `FLOWSIM_SLURM_TIME` | `--slurm-time` | `04:00:00` |
+| `FLOWSIM_SLURM_CONFIG` | Config file path | `/etc/flowsim/slurm.yaml` |
 
 ### Example k8s.yaml
 

@@ -230,11 +230,20 @@ class SlurmScheduler(BaseScheduler):
         nodes = fields.get("NodeList", "")
         output_file = fields.get("StdOut", "")
 
-        # Normalize to match test expectations
-        if state == "COMPLETED":
-            state = "Completed"
-        elif state == "FAILED":
-            state = "Failed"
+        # Normalize Slurm uppercase states to capitalized format
+        _STATE_MAP = {
+            "PENDING": "Pending",
+            "RUNNING": "Running",
+            "SUSPENDED": "Suspended",
+            "COMPLETED": "Completed",
+            "CANCELLED": "Cancelled",
+            "FAILED": "Failed",
+            "TIMEOUT": "Timeout",
+            "NODE_FAIL": "Failed",
+            "PREEMPTED": "Preempted",
+            "OUT_OF_MEMORY": "Failed",
+        }
+        state = _STATE_MAP.get(state, state)
 
         msg_parts = [
             f"Job ID: {job_id}  Name: {name}  State: {state}",
@@ -250,10 +259,33 @@ class SlurmScheduler(BaseScheduler):
         }
 
     def _logs_cli(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
-        # TODO: read actual Slurm log file (StdOut from scontrol)
-        # and support tail/follow properly.
         info = self._status_cli(job_id)
-        return info["message"]
+        output_file = info.get("output_hint", "")
+
+        if not output_file:
+            return info["message"] + "\n(no log file path found)"
+
+        # Try to read the log file via CLI prefix (handles remote Slurm)
+        if follow:
+            return (
+                f"{info['message']}\n\n"
+                f"Follow logs:\n"
+                f"  tail -f {output_file}"
+            )
+
+        r = self._cli_run("tail", f"-{tail}", output_file, timeout=15)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout
+
+        # Fallback: file may not exist yet or be on a remote node
+        return (
+            f"{info['message']}\n\n"
+            f"Log file: {output_file}\n"
+            f"View on login node:\n"
+            f"  tail -{tail} {output_file}\n"
+            f"Follow:\n"
+            f"  tail -f {output_file}"
+        )
 
     def _list_jobs_cli(self, *, status_filter: str = "") -> list[dict]:
         r = self._cli_run(

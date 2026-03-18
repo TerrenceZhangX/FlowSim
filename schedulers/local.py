@@ -118,7 +118,6 @@ class LocalScheduler(BaseScheduler):
         return " \\\n  ".join(parts)
 
     def render(self, spec: ProfileJobSpec) -> str:
-        self._check_image_exists(spec.image)
         return self._build_docker_cmd(spec)
 
     def submit(self, spec: ProfileJobSpec) -> JobResult:
