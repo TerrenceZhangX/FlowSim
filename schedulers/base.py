@@ -112,8 +112,9 @@ class ProfileJobSpec:
             self.log_dir,
         ]
         if self.sweep_points:
+            cmd.append("--sweep")
             for bs, il, ctx in self.sweep_points:
-                cmd.extend(["--sweep", f"{bs}:{il}:{ctx}"])
+                cmd.append(f"{bs}:{il}:{ctx}")
         else:
             cmd.extend(["--bs", str(self.bs)])
             cmd.extend(["--input-len", str(self.input_len)])

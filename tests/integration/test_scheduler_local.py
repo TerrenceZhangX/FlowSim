@@ -47,6 +47,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -592,3 +593,124 @@ class TestSlurmScheduler:
                     "--slurm-submit-via", "cli",
                     "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
                 )
+
+
+# =====================================================================
+# SWEEP — multi-point profiling in a single job
+# =====================================================================
+
+# Three lightweight points: different (bs, input_len, existing_ctx)
+_SWEEP_POINTS = [
+    (1, 2048, 0),
+    (1, 4096, 0),
+    (1, 2048, 2048),
+]
+
+
+def _assert_sweep_output(host_output_dir: str, points: list[tuple[int, int, int]]) -> None:
+    """Validate that every sweep point produced traces and parsed CSVs."""
+    for bs, il, ctx in points:
+        tag = f"bs{bs}_input{il}_ctx{ctx}"
+        point_dir = os.path.join(host_output_dir, tag)
+        assert os.path.isdir(point_dir), f"Missing sweep point dir: {point_dir}"
+        _assert_traces(point_dir)
+
+    # sweep_summary.json should exist at the root
+    summary_path = os.path.join(host_output_dir, "sweep_summary.json")
+    assert os.path.isfile(summary_path), f"Missing {summary_path}"
+    with open(summary_path) as f:
+        summary = json.load(f)
+    assert len(summary) == len(points), (
+        f"Expected {len(points)} entries in sweep_summary.json, got {len(summary)}"
+    )
+    for entry in summary:
+        assert entry["traces"] > 0, f"Point {entry} has 0 traces"
+
+
+class TestLocalSweep:
+    """Multi-point sweep via ``--sweep`` and ``--sweep-file`` on local scheduler.
+
+    Validates that one job profiles all requested points and produces
+    correct directory structure, traces, and sweep_summary.json.
+    """
+
+    def test_sweep_inline(self):
+        """Submit a 3-point sweep using inline --sweep tuples."""
+        sweep_args = [f"{bs}:{il}:{ctx}" for bs, il, ctx in _SWEEP_POINTS]
+
+        r = _flowsim_cli(
+            "submit",
+            "--scheduler", "local",
+            "--collect", "perf",
+            "--model-path", MODEL,
+            "--tp", "1",
+            "--decode-tokens", "2",
+            "--warmup-n", "2",
+            "--gpus", "1",
+            "--local-gpus", "0",
+            "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
+            "--sweep", *sweep_args,
+        )
+        combined = r.stdout + r.stderr
+        if r.returncode != 0:
+            print("STDOUT:", r.stdout[-3000:])
+            print("STDERR:", r.stderr[-3000:])
+        assert r.returncode == 0, f"sweep submit failed (exit {r.returncode})"
+
+        # Find host output dir from submit output
+        output_dir = None
+        for line in combined.splitlines():
+            if "Traces:" in line:
+                output_dir = line.split("Traces:", 1)[1].strip()
+                break
+        assert output_dir and os.path.isdir(output_dir), (
+            f"Could not find traces dir in output:\n{combined[-1000:]}"
+        )
+
+        _assert_sweep_output(output_dir, _SWEEP_POINTS)
+        _assert_logs(output_dir)
+
+    def test_sweep_file(self):
+        """Submit a 3-point sweep reading points from a file."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="sweep_"
+        ) as f:
+            f.write("# bs:input_len:existing_ctx\n")
+            for bs, il, ctx in _SWEEP_POINTS:
+                f.write(f"{bs}:{il}:{ctx}\n")
+            sweep_file = f.name
+
+        try:
+            r = _flowsim_cli(
+                "submit",
+                "--scheduler", "local",
+                "--collect", "perf",
+                "--model-path", MODEL,
+                "--tp", "1",
+                "--decode-tokens", "2",
+                "--warmup-n", "2",
+                "--gpus", "1",
+                "--local-gpus", "0",
+                "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
+                "--sweep-file", sweep_file,
+            )
+            combined = r.stdout + r.stderr
+            if r.returncode != 0:
+                print("STDOUT:", r.stdout[-3000:])
+                print("STDERR:", r.stderr[-3000:])
+            assert r.returncode == 0, f"sweep-file submit failed (exit {r.returncode})"
+
+            # Find host output dir from submit output
+            output_dir = None
+            for line in combined.splitlines():
+                if "Traces:" in line:
+                    output_dir = line.split("Traces:", 1)[1].strip()
+                    break
+            assert output_dir and os.path.isdir(output_dir), (
+                f"Could not find traces dir in output:\n{combined[-1000:]}"
+            )
+
+            _assert_sweep_output(output_dir, _SWEEP_POINTS)
+            _assert_logs(output_dir)
+        finally:
+            os.unlink(sweep_file)
