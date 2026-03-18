@@ -5,7 +5,7 @@ from __future__ import annotations
 import abc
 import shlex
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 
 
 @dataclass
@@ -55,6 +55,9 @@ class ProfileJobSpec:
     disagg_prefill_pp: int = 1
     disagg_ib_device: str = ""
 
+    # -- Sweep: explicit list of (bs, input_len, existing_ctx) tuples --
+    sweep_points: list[tuple[int, int, int]] = field(default_factory=list)
+
     # -- Extra server opts (appended verbatim) --
     extra_server_opts: str = ""
 
@@ -95,12 +98,6 @@ class ProfileJobSpec:
             "--launch-server",
             "--server-opts",
             self.build_server_opts(),
-            "--bs",
-            str(self.bs),
-            "--input-len",
-            str(self.input_len),
-            "--existing-ctx",
-            str(self.existing_ctx),
             "--decode-tokens",
             str(self.decode_tokens),
             "--warmup-n",
@@ -114,6 +111,13 @@ class ProfileJobSpec:
             "--log-dir",
             self.log_dir,
         ]
+        if self.sweep_points:
+            for bs, il, ctx in self.sweep_points:
+                cmd.extend(["--sweep", f"{bs}:{il}:{ctx}"])
+        else:
+            cmd.extend(["--bs", str(self.bs)])
+            cmd.extend(["--input-len", str(self.input_len)])
+            cmd.extend(["--existing-ctx", str(self.existing_ctx)])
         if self.disable_chunked_prefill:
             cmd.append("--disable-chunked-prefill")
             cmd.extend(["--max-prefill-tokens", str(self.max_prefill_tokens)])
@@ -140,7 +144,10 @@ class ProfileJobSpec:
         if self.job_name:
             return self.job_name
         model_short = self.model_path.split("/")[-1].lower().replace(".", "-")
-        name = f"flowsim-{self.collect}-{model_short}-bs{self.bs}-il{self.input_len}"
+        if self.sweep_points:
+            name = f"flowsim-{self.collect}-{model_short}-sweep{len(self.sweep_points)}pt"
+        else:
+            name = f"flowsim-{self.collect}-{model_short}-bs{self.bs}-il{self.input_len}"
         if self.disagg_mode:
             name += f"-{self.disagg_mode}"
         return name

@@ -105,6 +105,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Extra server options appended verbatim",
     )
+    wl.add_argument(
+        "--sweep",
+        type=str,
+        nargs="+",
+        default=[],
+        metavar="BS:INPUT_LEN:CTX",
+        help=(
+            "Profile multiple (bs, input_len, existing_ctx) points in one job. "
+            "Each value is a colon-separated tuple, e.g. --sweep 1:2048:0 4:8192:0. "
+            "Overrides --bs, --input-len, --existing-ctx."
+        ),
+    )
+    wl.add_argument(
+        "--sweep-file",
+        type=str,
+        default="",
+        metavar="FILE",
+        help=(
+            "Read sweep points from a file (one BS:INPUT_LEN:CTX per line, "
+            "# comments allowed). Overrides --bs, --input-len, --existing-ctx."
+        ),
+    )
 
     # -- Infrastructure --
     infra = p.add_argument_group("infrastructure")
@@ -301,7 +323,34 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _parse_sweep_points(args) -> list[tuple[int, int, int]]:
+    """Resolve sweep points from --sweep / --sweep-file args."""
+    if args.sweep and args.sweep_file:
+        sys.exit("Error: --sweep and --sweep-file are mutually exclusive")
+    points: list[tuple[int, int, int]] = []
+    raw: list[str] = []
+    if args.sweep:
+        raw = args.sweep
+    elif args.sweep_file:
+        with open(args.sweep_file) as f:
+            raw = [
+                line.strip()
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
+    for s in raw:
+        parts = s.strip().split(":")
+        if len(parts) != 3:
+            sys.exit(f"Bad sweep point {s!r}: expected BS:INPUT_LEN:CTX")
+        try:
+            points.append((int(parts[0]), int(parts[1]), int(parts[2])))
+        except ValueError:
+            sys.exit(f"Bad sweep point {s!r}: all three values must be integers")
+    return points
+
+
 def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:
+    sweep_points = _parse_sweep_points(args)
     return ProfileJobSpec(
         collect=args.collect,
         model_path=args.model_path,
@@ -325,6 +374,7 @@ def _build_spec(args: argparse.Namespace) -> ProfileJobSpec:
         disagg_bootstrap_port=args.disagg_bootstrap_port,
         disagg_prefill_pp=args.disagg_prefill_pp,
         disagg_ib_device=args.disagg_ib_device,
+        sweep_points=sweep_points,
     )
 
 

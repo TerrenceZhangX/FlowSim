@@ -700,6 +700,31 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         default="/flowsim/stage_traces",
         help="Root directory for trace output",
     )
+
+    sweep = p.add_argument_group("sweep (multi-point profiling)")
+    sweep.add_argument(
+        "--sweep",
+        type=str,
+        nargs="+",
+        default=[],
+        metavar="BS:INPUT_LEN:CTX",
+        help=(
+            "Profile multiple (bs, input_len, existing_ctx) points in one job. "
+            "Each value is a colon-separated tuple, e.g. --sweep 1:2048:0 4:8192:0 16:2048:4096. "
+            "Overrides --bs, --input-len, --existing-ctx."
+        ),
+    )
+    sweep.add_argument(
+        "--sweep-file",
+        type=str,
+        default="",
+        metavar="FILE",
+        help=(
+            "Read sweep points from a file (one BS:INPUT_LEN:CTX per line, "
+            "# comments allowed). Overrides --bs, --input-len, --existing-ctx."
+        ),
+    )
+
     srv = p.add_argument_group("server launch (optional)")
     srv.add_argument(
         "--launch-server",
@@ -719,6 +744,45 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     )
 
     return p.parse_args(argv)
+
+
+def _parse_sweep_point(s: str) -> tuple[int, int, int]:
+    """Parse a ``BS:INPUT_LEN:CTX`` string into an int 3-tuple."""
+    parts = s.strip().split(":")
+    if len(parts) != 3:
+        raise ValueError(
+            f"Bad sweep point {s!r}: expected BS:INPUT_LEN:CTX "
+            f"(e.g. 1:2048:0)"
+        )
+    try:
+        return int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        raise ValueError(
+            f"Bad sweep point {s!r}: all three values must be integers"
+        )
+
+
+def _load_sweep_points(args) -> list[tuple[int, int, int]]:
+    """Resolve sweep points from --sweep, --sweep-file, or single-point args."""
+    if args.sweep and args.sweep_file:
+        print("[ERROR] --sweep and --sweep-file are mutually exclusive")
+        raise SystemExit(1)
+
+    points: list[tuple[int, int, int]] = []
+    if args.sweep:
+        for s in args.sweep:
+            points.append(_parse_sweep_point(s))
+    elif args.sweep_file:
+        with open(args.sweep_file) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                points.append(_parse_sweep_point(line))
+    else:
+        # Single-point from --bs / --input-len / --existing-ctx
+        points.append((args.bs, args.input_len, args.existing_ctx))
+    return points
 
 
 # ---------------------------------------------------------------------------
@@ -759,11 +823,11 @@ def _start_server(
     return proc
 
 
-def _run_perf(args, summary: list[dict]) -> int:
+def _run_perf(args, summary: list[dict], *, bs: int = 0, input_len: int = 0, existing_ctx: int = 0) -> int:
     """Collect traces for a single (bs, input_len, existing_ctx, decode_tokens) point."""
-    bs = args.bs
-    input_len = args.input_len
-    existing_ctx = args.existing_ctx
+    bs = bs or args.bs
+    input_len = input_len or args.input_len
+    existing_ctx = existing_ctx if (bs != 0) else args.existing_ctx
 
     tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
     sub_dir = os.path.join(args.output_dir, tag)
@@ -887,6 +951,14 @@ def main(argv: Optional[list] = None) -> int:
 
     server_proc = None
     summary: list[dict] = []
+    sweep_points = _load_sweep_points(args)
+    is_sweep = len(sweep_points) > 1
+
+    if is_sweep:
+        print(f"\n[sweep] {len(sweep_points)} points to profile:")
+        for i, (bs, il, ctx) in enumerate(sweep_points):
+            print(f"  [{i+1}] bs={bs}  input_len={il}  existing_ctx={ctx}")
+        print()
 
     try:
         # ==================================================================
@@ -908,7 +980,10 @@ def main(argv: Optional[list] = None) -> int:
             print("  PHASE 1 / 2 : PERF COLLECTION")
             print("=" * 60 + "\n")
             server_proc = _start_server(args, disable_cuda_graph=False)
-            _run_perf(args, summary)
+            for idx, (bs, il, ctx) in enumerate(sweep_points):
+                if is_sweep:
+                    print(f"\n[sweep] Point {idx+1}/{len(sweep_points)}")
+                _run_perf(args, summary, bs=bs, input_len=il, existing_ctx=ctx)
             _write_summary(args, summary)
             print("\n[server] Shutting down for shape pass …")
             kill_server(server_proc)
@@ -929,7 +1004,10 @@ def main(argv: Optional[list] = None) -> int:
         if args.collect == "perf":
             if args.launch_server:
                 server_proc = _start_server(args, disable_cuda_graph=False)
-            _run_perf(args, summary)
+            for idx, (bs, il, ctx) in enumerate(sweep_points):
+                if is_sweep:
+                    print(f"\n[sweep] Point {idx+1}/{len(sweep_points)}")
+                _run_perf(args, summary, bs=bs, input_len=il, existing_ctx=ctx)
             _write_summary(args, summary)
             return 0
 
