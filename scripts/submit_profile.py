@@ -382,9 +382,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.scheduler == "local":
             args.output_dir = f"/flowsim/stage_traces/local/{_ts}"
         elif args.scheduler == "slurm":
-            args.output_dir = os.path.expanduser(
-                f"~/flowsim_traces/slurm/{_ts}"
-            )
+            args.output_dir = f"/flowsim/stage_traces/slurm/{_ts}"
         else:
             args.output_dir = f"/flowsim/stage_traces/k8s/{_ts}"
 

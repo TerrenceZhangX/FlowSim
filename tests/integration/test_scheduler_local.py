@@ -507,8 +507,8 @@ class TestSlurmScheduler:
         # output_dir inside the container maps directly to the host.
         host_traces = os.path.join(_PROJECT_ROOT, "stage_traces")
         os.makedirs(host_traces, exist_ok=True)
-        ts = int(time.time())
-        output_dir = f"/flowsim/stage_traces/slurm/test_{ts}"
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        output_dir = f"/flowsim/stage_traces/slurm/{ts}"
 
         job_id = None
         try:
