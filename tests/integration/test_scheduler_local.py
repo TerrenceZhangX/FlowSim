@@ -527,7 +527,6 @@ class TestSlurmScheduler:
                 "--warmup-n", "2",
                 "--gpus", "1",
                 "--slurm-partition", "normal",
-                "--slurm-submit-via", "cli",
                 "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
                 "--slurm-container-runtime", "none",
                 "--output-dir", output_dir,
@@ -556,7 +555,6 @@ class TestSlurmScheduler:
                 r_status = _flowsim_cli(
                     "status", "--scheduler", "slurm",
                     "--job", job_id,
-                    "--slurm-submit-via", "cli",
                     "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
                 )
                 assert r_status.returncode == 0
@@ -590,7 +588,6 @@ class TestSlurmScheduler:
                 _flowsim_cli(
                     "cancel", "--scheduler", "slurm",
                     "--job", job_id,
-                    "--slurm-submit-via", "cli",
                     "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
                 )
 
