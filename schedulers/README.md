@@ -54,6 +54,9 @@ flowsim submit --scheduler <backend> \
 | `--gpus` | GPU count | `1` |
 | `--image` | Docker image | `flowsim-image:latest` |
 | `--output-dir` | Output directory | `stage_traces/{scheduler}/{timestamp}/` |
+| `--extra-server-opts` | Extra sglang server flags (quoted string) | `""` |
+| `--sweep` | Multi-point sweep `BS:INPUT_LEN:CTX` (repeatable) | empty |
+| `--job-name` | Custom job name | auto-generated |
 | `--dry-run` | Print script only | `false` |
 
 ---
