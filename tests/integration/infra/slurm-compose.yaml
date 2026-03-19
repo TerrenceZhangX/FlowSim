@@ -83,6 +83,9 @@ services:
     <<: *slurm-base
     container_name: slurmd-0
     hostname: slurmd-0
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
     command: >
       bash -c "
         mkdir -p /run/munge && chown munge:munge /run/munge
@@ -100,13 +103,6 @@ services:
       - /home/administrator/zhangt/FlowSim/stage_traces:/flowsim/stage_traces
       # Cgroup needed by slurmd
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["0"]
-              capabilities: [gpu]
 
   # ---- REST API (optional, for REST mode) ----
   # slurmrestd:
