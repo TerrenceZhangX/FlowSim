@@ -51,12 +51,16 @@ import os
 import sys
 
 from schedulers.base import ProfileJobSpec
-from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default
+from schedulers.config import (
+    cfg_get,
+    load_k8s_config,
+    load_slurm_config,
+    resolve_default,
+)
 from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
 from scripts import load_sweep_file, parse_sweep_point
-
 
 # Short alias for argparse default= expressions
 _d = resolve_default
@@ -97,7 +101,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     wl.add_argument("--decode-tokens", type=int, default=32)
     wl.add_argument("--warmup-n", type=int, default=5)
     wl.add_argument(
-        "--disable-chunked-prefill", action="store_true",
+        "--disable-chunked-prefill",
+        action="store_true",
     )
     wl.add_argument("--max-prefill-tokens", type=int, default=131072)
     wl.add_argument(
@@ -132,7 +137,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     infra = p.add_argument_group("infrastructure")
     infra.add_argument("--image", default="flowsim-image:latest")
     infra.add_argument(
-        "--gpus", type=int, default=1, help="Total GPU count",
+        "--gpus",
+        type=int,
+        default=1,
+        help="Total GPU count",
     )
     infra.add_argument("--host", default="0.0.0.0")
     infra.add_argument("--port", type=int, default=30001)
@@ -166,10 +174,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
 
     elif pre.scheduler == "k8s":
-        k8s = p.add_argument_group("kubernetes options (config: ~/.flowsim/k8s.yaml)")
+        k8s = p.add_argument_group(
+            "kubernetes options (config: ~/.flowsim/k8s.yaml)"
+        )
         k8s.add_argument(
             "--k8s-namespace",
-            default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
+            default=_d(
+                "FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"
+            ),
             help="K8s namespace (env: FLOWSIM_K8S_NAMESPACE)",
         )
         k8s.add_argument(
@@ -214,7 +226,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
 
     elif pre.scheduler == "slurm":
-        slurm = p.add_argument_group("slurm options (config: ~/.flowsim/slurm.yaml)")
+        slurm = p.add_argument_group(
+            "slurm options (config: ~/.flowsim/slurm.yaml)"
+        )
         slurm.add_argument(
             "--slurm-partition",
             default=_d("FLOWSIM_SLURM_PARTITION", slurm_cfg, "partition", ""),
@@ -243,7 +257,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             default=cfg_get(slurm_cfg, "container_mounts", ""),
         )
         # Modules from config (list) + CLI (append)
-        cfg_modules = slurm_cfg.get("modules") if isinstance(slurm_cfg.get("modules"), list) else []
+        cfg_modules = (
+            slurm_cfg.get("modules")
+            if isinstance(slurm_cfg.get("modules"), list)
+            else []
+        )
         slurm.add_argument(
             "--slurm-module",
             action="append",
@@ -316,7 +334,9 @@ def _build_scheduler(args: argparse.Namespace):
         for item in args.k8s_node_selector:
             k, _, v = item.partition("=")
             if not v:
-                sys.exit(f"Bad --k8s-node-selector format: {item!r} (use KEY=VALUE)")
+                sys.exit(
+                    f"Bad --k8s-node-selector format: {item!r} (use KEY=VALUE)"
+                )
             node_sel[k] = v
         return K8sScheduler(
             namespace=args.k8s_namespace,
@@ -349,6 +369,7 @@ def main(argv: list[str] | None = None) -> None:
     # Smart defaults for output_dir based on scheduler.
     # Layout: stage_traces/{scheduler}/{timestamp}/
     import time as _time
+
     _ts = _time.strftime("%Y%m%d_%H%M%S")
     if not args.output_dir:
         if args.scheduler == "local":
@@ -365,7 +386,9 @@ def main(argv: list[str] | None = None) -> None:
     # For local scheduler, convert absolute host model_path to relative
     # so it resolves correctly inside the container (workdir=/flowsim).
     if args.scheduler == "local" and os.path.isabs(args.model_path):
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))
+        )
         if args.model_path.startswith(project_root):
             args.model_path = os.path.relpath(args.model_path, project_root)
 
@@ -389,18 +412,36 @@ def main(argv: list[str] | None = None) -> None:
             if args.k8s_pvc:
                 print(f"  (persisted on PVC '{args.k8s_pvc}')")
             else:
-                print(f"  (persisted at hostPath '{args.k8s_host_output_dir}' on the node)")
-            print(f"\nTo check status:  flowsim status --scheduler k8s --job {job_id}")
-            print(f"To view logs:     flowsim logs   --scheduler k8s --job {job_id}")
-            print(f"To follow logs:   flowsim logs   --scheduler k8s --job {job_id} --follow")
-            print(f"To cancel:        flowsim cancel --scheduler k8s --job {job_id}")
+                print(
+                    f"  (persisted at hostPath '{args.k8s_host_output_dir}' on the node)"
+                )
+            print(
+                f"\nTo check status:  flowsim status --scheduler k8s --job {job_id}"
+            )
+            print(
+                f"To view logs:     flowsim logs   --scheduler k8s --job {job_id}"
+            )
+            print(
+                f"To follow logs:   flowsim logs   --scheduler k8s --job {job_id} --follow"
+            )
+            print(
+                f"To cancel:        flowsim cancel --scheduler k8s --job {job_id}"
+            )
         elif sched == "slurm":
             print(f"  (on cluster shared filesystem)")
-            print(f"\nTo check status:  flowsim status --scheduler slurm --job {job_id}")
-            print(f"To view logs:     flowsim logs   --scheduler slurm --job {job_id}")
-            print(f"To cancel:        flowsim cancel --scheduler slurm --job {job_id}")
+            print(
+                f"\nTo check status:  flowsim status --scheduler slurm --job {job_id}"
+            )
+            print(
+                f"To view logs:     flowsim logs   --scheduler slurm --job {job_id}"
+            )
+            print(
+                f"To cancel:        flowsim cancel --scheduler slurm --job {job_id}"
+            )
         else:
-            print(f"\nTo view logs:     flowsim logs   --scheduler local --job {job_id}")
+            print(
+                f"\nTo view logs:     flowsim logs   --scheduler local --job {job_id}"
+            )
         print(f"To list all jobs: flowsim list   --scheduler {sched}")
 
 

@@ -58,7 +58,8 @@ class LocalScheduler(BaseScheduler):
         """Raise if the Docker image is not available locally."""
         result = subprocess.run(
             ["docker", "image", "inspect", image],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
         if result.returncode != 0:
             raise SystemExit(
@@ -84,7 +85,7 @@ class LocalScheduler(BaseScheduler):
         # Strip the /flowsim/ prefix to get the relative path
         rel = spec_output_dir
         if rel.startswith("/flowsim/"):
-            rel = rel[len("/flowsim/"):]
+            rel = rel[len("/flowsim/") :]
         return os.path.join(self.workdir, rel)
 
     def _build_docker_cmd(self, spec: ProfileJobSpec) -> str:
@@ -97,7 +98,9 @@ class LocalScheduler(BaseScheduler):
         """
         job_name = spec.default_job_name()[:63]
         host_output = self._host_output_dir(spec.output_dir)
-        container_output = spec.output_dir  # e.g. /flowsim/stage_traces/local/{ts}
+        container_output = (
+            spec.output_dir
+        )  # e.g. /flowsim/stage_traces/local/{ts}
 
         inner_cmd = spec.build_shell_command()
 
@@ -140,7 +143,8 @@ class LocalScheduler(BaseScheduler):
         # Remove stale container with the same name (e.g. from a killed run)
         subprocess.run(
             ["docker", "rm", "-f", job_name[:63]],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
         stdout_path = os.path.join(log_dir, f"{job_name}_{ts}.stdout.log")
         stderr_path = os.path.join(log_dir, f"{job_name}_{ts}.stderr.log")
@@ -171,10 +175,14 @@ class LocalScheduler(BaseScheduler):
                     dest_file.flush()
 
             t_out = threading.Thread(
-                target=_tee, args=(proc.stdout, fout, sys.stdout), daemon=True,
+                target=_tee,
+                args=(proc.stdout, fout, sys.stdout),
+                daemon=True,
             )
             t_err = threading.Thread(
-                target=_tee, args=(proc.stderr, ferr, sys.stderr), daemon=True,
+                target=_tee,
+                args=(proc.stderr, ferr, sys.stderr),
+                daemon=True,
             )
             t_out.start()
             t_err.start()
@@ -210,7 +218,9 @@ class LocalScheduler(BaseScheduler):
         """Stop the Docker container for a local job."""
         proc = subprocess.run(
             ["docker", "stop", job_id],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if proc.returncode == 0:
             return f"Stopped container {job_id}"
@@ -234,9 +244,11 @@ class LocalScheduler(BaseScheduler):
         """
         matches = []
         for log_dir in self._find_log_dirs():
-            matches.extend(sorted(glob.glob(
-                os.path.join(log_dir, f"{job_id}_*.stdout.log")
-            )))
+            matches.extend(
+                sorted(
+                    glob.glob(os.path.join(log_dir, f"{job_id}_*.stdout.log"))
+                )
+            )
 
         if not matches:
             return {
@@ -260,25 +272,29 @@ class LocalScheduler(BaseScheduler):
             "output_hint": trace_dir,
         }
 
-    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+    def logs(
+        self, job_id: str, *, tail: int = 100, follow: bool = False
+    ) -> str:
         """List log files for a local job and print access commands."""
         matches = []
         for log_dir in self._find_log_dirs():
-            matches.extend(sorted(glob.glob(
-                os.path.join(log_dir, f"{job_id}_*")
-            )))
+            matches.extend(
+                sorted(glob.glob(os.path.join(log_dir, f"{job_id}_*")))
+            )
 
         if not matches:
             for log_dir in self._find_log_dirs():
-                matches.extend(sorted(glob.glob(
-                    os.path.join(log_dir, f"*{job_id}*")
-                )))
+                matches.extend(
+                    sorted(glob.glob(os.path.join(log_dir, f"*{job_id}*")))
+                )
 
         if not matches:
             return f"No logs found matching '{job_id}'"
 
         if follow:
-            stdout_files = sorted(f for f in matches if f.endswith(".stdout.log"))
+            stdout_files = sorted(
+                f for f in matches if f.endswith(".stdout.log")
+            )
             if stdout_files:
                 return f"Follow logs with:\n  tail -f {stdout_files[-1]}"
             return f"No stdout log found to follow for '{job_id}'"
@@ -315,9 +331,9 @@ class LocalScheduler(BaseScheduler):
         """List local jobs by scanning log files."""
         matches = []
         for log_dir in self._find_log_dirs():
-            matches.extend(sorted(glob.glob(
-                os.path.join(log_dir, "*.stdout.log")
-            )))
+            matches.extend(
+                sorted(glob.glob(os.path.join(log_dir, "*.stdout.log")))
+            )
 
         jobs: list[dict] = []
         for path in matches:
@@ -330,12 +346,14 @@ class LocalScheduler(BaseScheduler):
             name = m.group(1)
             ts = m.group(2)
             state = "Completed"
-            jobs.append({
-                "job_id": name,
-                "name": name,
-                "state": state,
-                "timestamp": ts,
-            })
+            jobs.append(
+                {
+                    "job_id": name,
+                    "name": name,
+                    "state": state,
+                    "timestamp": ts,
+                }
+            )
 
         if status_filter:
             filt = status_filter.lower()

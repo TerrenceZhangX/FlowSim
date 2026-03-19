@@ -58,29 +58,34 @@ from schedulers.local import LocalScheduler
 _PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..")
 )
-_DEV_SETUP = os.path.join(_PROJECT_ROOT, "tests", "integration", "infra", "dev-setup.sh")
-_DEV_TEARDOWN = os.path.join(_PROJECT_ROOT, "tests", "integration", "infra", "dev-teardown.sh")
-
-MODEL = os.environ.get(
-    "MODEL", "workload/models/configs/Qwen3-235B-A22B"
+_DEV_SETUP = os.path.join(
+    _PROJECT_ROOT, "tests", "integration", "infra", "dev-setup.sh"
 )
+_DEV_TEARDOWN = os.path.join(
+    _PROJECT_ROOT, "tests", "integration", "infra", "dev-teardown.sh"
+)
+
+MODEL = os.environ.get("MODEL", "workload/models/configs/Qwen3-235B-A22B")
 LOAD_FORMAT = os.environ.get("LOAD_FORMAT", "dummy")
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _flowsim_cli(*args: str, timeout: int = 1200) -> subprocess.CompletedProcess:
+
+def _flowsim_cli(
+    *args: str, timeout: int = 1200
+) -> subprocess.CompletedProcess:
     """Run a ``flowsim`` subcommand via Python entry point."""
     cmd = [
-        sys.executable, "-u", "-c",
+        sys.executable,
+        "-u",
+        "-c",
         "from scripts.cli import main; main()",
         *args,
     ]
     env = os.environ.copy()
-    env["PYTHONPATH"] = _PROJECT_ROOT + (
-        ":" + env.get("PYTHONPATH", "")
-    )
+    env["PYTHONPATH"] = _PROJECT_ROOT + (":" + env.get("PYTHONPATH", ""))
     env["PYTHONUNBUFFERED"] = "1"
     return subprocess.run(
         cmd,
@@ -123,10 +128,7 @@ def _assert_logs(output_dir: str) -> None:
     assert len(stdout_logs) > 0, f"No stdout logs in {log_dir}"
     assert len(stderr_logs) > 0, f"No stderr logs in {log_dir}"
     # At least one log should be non-empty
-    sizes = [
-        os.path.getsize(os.path.join(log_dir, f))
-        for f in stdout_logs
-    ]
+    sizes = [os.path.getsize(os.path.join(log_dir, f)) for f in stdout_logs]
     assert max(sizes) > 0, "All stdout logs are empty"
 
 
@@ -185,10 +187,14 @@ def _validate_shapes(output_dir, bs, input_len, existing_ctx):
     tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
     for csv_subdir in ("merged", "shape_parsed"):
         extend_csvs = sorted(
-            glob.glob(os.path.join(output_dir, tag, csv_subdir, "*TP-0*EXTEND*.csv"))
+            glob.glob(
+                os.path.join(output_dir, tag, csv_subdir, "*TP-0*EXTEND*.csv")
+            )
         )
         decode_csvs = sorted(
-            glob.glob(os.path.join(output_dir, tag, csv_subdir, "*TP-0*DECODE*.csv"))
+            glob.glob(
+                os.path.join(output_dir, tag, csv_subdir, "*TP-0*DECODE*.csv")
+            )
         )
         if extend_csvs and decode_csvs:
             break
@@ -204,23 +210,23 @@ def _validate_shapes(output_dir, bs, input_len, existing_ctx):
     ext_gemm_dim0 = _first_matmul_dim0(extend_rows)
     assert ext_gemm_dim0 is not None, "No matmul kernel found in EXTEND CSV"
     expected_ext = bs * input_len
-    assert ext_gemm_dim0 == expected_ext, (
-        f"EXTEND first GEMM dim0={ext_gemm_dim0}, expected bs*input_len={expected_ext}"
-    )
+    assert (
+        ext_gemm_dim0 == expected_ext
+    ), f"EXTEND first GEMM dim0={ext_gemm_dim0}, expected bs*input_len={expected_ext}"
 
     # EXTEND FlashAttn dims contain [bs, seq_len]
     seq_len = input_len + existing_ctx
     attn_pair = _attention_seqlen_pair(extend_rows, bs, seq_len)
-    assert attn_pair is not None, (
-        f"No FlashAttention dim matching [bs={bs}, seqlen={seq_len}(+1)] in EXTEND CSV"
-    )
+    assert (
+        attn_pair is not None
+    ), f"No FlashAttention dim matching [bs={bs}, seqlen={seq_len}(+1)] in EXTEND CSV"
 
     # DECODE first GEMM dim0 == bs
     dec_gemm_dim0 = _first_matmul_dim0(decode_rows)
     assert dec_gemm_dim0 is not None, "No matmul kernel found in DECODE CSV"
-    assert dec_gemm_dim0 == bs, (
-        f"DECODE first GEMM dim0={dec_gemm_dim0}, expected bs={bs}"
-    )
+    assert (
+        dec_gemm_dim0 == bs
+    ), f"DECODE first GEMM dim0={dec_gemm_dim0}, expected bs={bs}"
 
 
 # =====================================================================
@@ -244,7 +250,10 @@ class TestLocalScheduler:
     @pytest.mark.parametrize(
         "point",
         _TP1_POINTS,
-        ids=[f"bs{p['bs']}_il{p['input_len']}_ctx{p['existing_ctx']}" for p in _TP1_POINTS],
+        ids=[
+            f"bs{p['bs']}_il{p['input_len']}_ctx{p['existing_ctx']}"
+            for p in _TP1_POINTS
+        ],
     )
     def test_local_tp1_all(self, point):
         bs = point["bs"]
@@ -255,18 +264,30 @@ class TestLocalScheduler:
         # ── Step 1: submit ──
         r = _flowsim_cli(
             "submit",
-            "--scheduler", "local",
-            "--collect", "all",
-            "--model-path", MODEL,
-            "--tp", "1",
-            "--bs", str(bs),
-            "--input-len", str(input_len),
-            "--existing-ctx", str(existing_ctx),
-            "--decode-tokens", str(decode_tokens),
-            "--warmup-n", "2",
-            "--gpus", "1",
-            "--local-gpus", "0",
-            "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
+            "--scheduler",
+            "local",
+            "--collect",
+            "all",
+            "--model-path",
+            MODEL,
+            "--tp",
+            "1",
+            "--bs",
+            str(bs),
+            "--input-len",
+            str(input_len),
+            "--existing-ctx",
+            str(existing_ctx),
+            "--decode-tokens",
+            str(decode_tokens),
+            "--warmup-n",
+            "2",
+            "--gpus",
+            "1",
+            "--local-gpus",
+            "0",
+            "--extra-server-opts",
+            f"--load-format {LOAD_FORMAT}",
         )
         if r.returncode != 0:
             print("STDOUT:", r.stdout[-3000:])
@@ -284,22 +305,26 @@ class TestLocalScheduler:
                         break
                 if job_id:
                     break
-        assert job_id, f"Could not find job_id in submit output:\n{combined[-1000:]}"
+        assert (
+            job_id
+        ), f"Could not find job_id in submit output:\n{combined[-1000:]}"
 
         # ── Step 2: list — verify job appears ──
         r_list = _flowsim_cli("list", "--scheduler", "local")
         assert r_list.returncode == 0, "flowsim list failed"
-        assert job_id in r_list.stdout, (
-            f"Job {job_id} not found in list output:\n{r_list.stdout}"
-        )
+        assert (
+            job_id in r_list.stdout
+        ), f"Job {job_id} not found in list output:\n{r_list.stdout}"
 
         # ── Step 3: status — should be Completed (submit is synchronous) ──
-        r_status = _flowsim_cli("status", "--scheduler", "local", "--job", job_id)
+        r_status = _flowsim_cli(
+            "status", "--scheduler", "local", "--job", job_id
+        )
         assert r_status.returncode == 0, "flowsim status failed"
         status_out = r_status.stdout.lower()
-        assert "completed" in status_out, (
-            f"Job {job_id} not completed:\n{r_status.stdout}"
-        )
+        assert (
+            "completed" in status_out
+        ), f"Job {job_id} not completed:\n{r_status.stdout}"
 
         # ── Step 4: validate trace CSVs ──
         # Extract output_dir from status output (Traces dir: ...)
@@ -308,23 +333,29 @@ class TestLocalScheduler:
             if "Traces dir:" in line:
                 output_dir = line.split("Traces dir:", 1)[1].strip()
                 break
-        assert output_dir and os.path.isdir(output_dir), (
-            f"Could not find traces dir in status output:\n{r_status.stdout}"
-        )
+        assert output_dir and os.path.isdir(
+            output_dir
+        ), f"Could not find traces dir in status output:\n{r_status.stdout}"
         _assert_traces(output_dir)
         _assert_logs(output_dir)
-        _validate_shapes(output_dir, bs=bs, input_len=input_len, existing_ctx=existing_ctx)
+        _validate_shapes(
+            output_dir, bs=bs, input_len=input_len, existing_ctx=existing_ctx
+        )
 
 
 # =====================================================================
 # Cluster setup helpers & fixtures
 # =====================================================================
 
+
 def _run_dev_setup(target: str) -> None:
     """Run ``tests/integration/infra/dev-setup.sh <target>`` and assert success."""
     r = subprocess.run(
         ["bash", _DEV_SETUP, target],
-        capture_output=True, text=True, cwd=_PROJECT_ROOT, timeout=300,
+        capture_output=True,
+        text=True,
+        cwd=_PROJECT_ROOT,
+        timeout=300,
     )
     if r.returncode != 0:
         raise RuntimeError(
@@ -337,7 +368,10 @@ def _run_dev_teardown(target: str) -> None:
     """Run ``tests/integration/infra/dev-teardown.sh <target>``."""
     subprocess.run(
         ["bash", _DEV_TEARDOWN, target],
-        capture_output=True, text=True, cwd=_PROJECT_ROOT, timeout=120,
+        capture_output=True,
+        text=True,
+        cwd=_PROJECT_ROOT,
+        timeout=120,
     )
 
 
@@ -346,7 +380,9 @@ def _kind_cluster_running() -> bool:
     try:
         r = subprocess.run(
             ["kubectl", "--context", "kind-flowsim", "get", "nodes"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return r.returncode == 0 and "Ready" in r.stdout
     except Exception:
@@ -406,20 +442,34 @@ class TestK8sScheduler:
             # ── Step 1: submit (host mount for trace retrieval) ──
             r = _flowsim_cli(
                 "submit",
-                "--scheduler", "k8s",
-                "--collect", "all",
-                "--model-path", MODEL,
-                "--tp", "1",
-                "--bs", "1",
-                "--input-len", "2048",
-                "--existing-ctx", "0",
-                "--decode-tokens", "2",
-                "--warmup-n", "2",
-                "--gpus", "1",
-                "--k8s-namespace", "default",
-                "--k8s-host-output-dir", "/host-stage-traces",
-                "--job-name", job_name,
-                "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
+                "--scheduler",
+                "k8s",
+                "--collect",
+                "all",
+                "--model-path",
+                MODEL,
+                "--tp",
+                "1",
+                "--bs",
+                "1",
+                "--input-len",
+                "2048",
+                "--existing-ctx",
+                "0",
+                "--decode-tokens",
+                "2",
+                "--warmup-n",
+                "2",
+                "--gpus",
+                "1",
+                "--k8s-namespace",
+                "default",
+                "--k8s-host-output-dir",
+                "/host-stage-traces",
+                "--job-name",
+                job_name,
+                "--extra-server-opts",
+                f"--load-format {LOAD_FORMAT}",
             )
             combined = r.stdout + r.stderr
             if r.returncode != 0:
@@ -429,15 +479,17 @@ class TestK8sScheduler:
             # ── Step 2: list — verify job appears ──
             r_list = _flowsim_cli("list", "--scheduler", "k8s")
             assert r_list.returncode == 0
-            assert job_name in r_list.stdout, (
-                f"Job {job_name} not in list:\n{r_list.stdout}"
-            )
+            assert (
+                job_name in r_list.stdout
+            ), f"Job {job_name} not in list:\n{r_list.stdout}"
 
             # ── Step 3: status — poll until Completed/Succeeded (max 20 min) ──
             deadline = time.time() + 1200
             state = ""
             while time.time() < deadline:
-                r_status = _flowsim_cli("status", "--scheduler", "k8s", "--job", job_name)
+                r_status = _flowsim_cli(
+                    "status", "--scheduler", "k8s", "--job", job_name
+                )
                 assert r_status.returncode == 0
                 state = r_status.stdout.lower()
                 if "completed" in state or "succeeded" in state:
@@ -445,18 +497,18 @@ class TestK8sScheduler:
                 if "failed" in state:
                     pytest.fail(f"K8s job failed:\n{r_status.stdout}")
                 time.sleep(15)
-            assert "completed" in state or "succeeded" in state, (
-                f"K8s job did not complete in time:\n{r_status.stdout}"
-            )
+            assert (
+                "completed" in state or "succeeded" in state
+            ), f"K8s job did not complete in time:\n{r_status.stdout}"
 
             # ── Step 4: traces are on host via Kind mount ──
             # output_dir inside container: /flowsim/stage_traces/k8s/{ts}
             # host_output_dir on worker: /host-stage-traces
             # → host: {project}/stage_traces/k8s/{ts}/
             k8s_traces = os.path.join(host_traces, "k8s")
-            assert os.path.isdir(k8s_traces), (
-                f"No k8s traces dir at {k8s_traces}"
-            )
+            assert os.path.isdir(
+                k8s_traces
+            ), f"No k8s traces dir at {k8s_traces}"
             # Find the latest timestamped subdir
             ts_dirs = sorted(os.listdir(k8s_traces))
             assert ts_dirs, f"No timestamp dirs in {k8s_traces}"
@@ -476,12 +528,15 @@ class TestK8sScheduler:
 # SLURM SCHEDULER
 # =====================================================================
 
+
 def _slurm_cluster_running() -> bool:
     """Check if local Slurm test cluster (docker compose) is running."""
     try:
         r = subprocess.run(
             ["docker", "exec", "slurmctld", "sinfo", "-h"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return r.returncode == 0 and r.stdout.strip() != ""
     except Exception:
@@ -516,21 +571,36 @@ class TestSlurmScheduler:
             # ── Step 1: submit (CLI mode, container_runtime=none) ──
             r = _flowsim_cli(
                 "submit",
-                "--scheduler", "slurm",
-                "--collect", "all",
-                "--model-path", MODEL,
-                "--tp", "1",
-                "--bs", "1",
-                "--input-len", "2048",
-                "--existing-ctx", "0",
-                "--decode-tokens", "2",
-                "--warmup-n", "2",
-                "--gpus", "1",
-                "--slurm-partition", "normal",
-                "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
-                "--slurm-container-runtime", "none",
-                "--output-dir", output_dir,
-                "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
+                "--scheduler",
+                "slurm",
+                "--collect",
+                "all",
+                "--model-path",
+                MODEL,
+                "--tp",
+                "1",
+                "--bs",
+                "1",
+                "--input-len",
+                "2048",
+                "--existing-ctx",
+                "0",
+                "--decode-tokens",
+                "2",
+                "--warmup-n",
+                "2",
+                "--gpus",
+                "1",
+                "--slurm-partition",
+                "normal",
+                "--slurm-cli-prefix",
+                _SLURM_CLI_PREFIX,
+                "--slurm-container-runtime",
+                "none",
+                "--output-dir",
+                output_dir,
+                "--extra-server-opts",
+                f"--load-format {LOAD_FORMAT}",
             )
             combined = r.stdout + r.stderr
             if r.returncode != 0:
@@ -546,16 +616,22 @@ class TestSlurmScheduler:
                             break
                 if job_id:
                     break
-            assert job_id, f"Could not find job_id in submit output:\n{combined[-1000:]}"
+            assert (
+                job_id
+            ), f"Could not find job_id in submit output:\n{combined[-1000:]}"
 
             # ── Step 2: status — poll until Completed (max 20 min) ──
             deadline = time.time() + 1200
             state = ""
             while time.time() < deadline:
                 r_status = _flowsim_cli(
-                    "status", "--scheduler", "slurm",
-                    "--job", job_id,
-                    "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
+                    "status",
+                    "--scheduler",
+                    "slurm",
+                    "--job",
+                    job_id,
+                    "--slurm-cli-prefix",
+                    _SLURM_CLI_PREFIX,
                 )
                 assert r_status.returncode == 0
                 state = r_status.stdout.lower()
@@ -564,15 +640,15 @@ class TestSlurmScheduler:
                 if "failed" in state:
                     pytest.fail(f"Slurm job failed:\n{r_status.stdout}")
                 time.sleep(15)
-            assert "completed" in state or "succeeded" in state, (
-                f"Slurm job did not complete in time:\n{r_status.stdout}"
-            )
+            assert (
+                "completed" in state or "succeeded" in state
+            ), f"Slurm job did not complete in time:\n{r_status.stdout}"
 
             # ── Step 3: traces are on host via mount ──
             slurm_traces = os.path.join(host_traces, "slurm")
-            assert os.path.isdir(slurm_traces), (
-                f"No slurm traces dir at {slurm_traces}"
-            )
+            assert os.path.isdir(
+                slurm_traces
+            ), f"No slurm traces dir at {slurm_traces}"
             ts_dirs = sorted(os.listdir(slurm_traces))
             assert ts_dirs, f"No test dirs in {slurm_traces}"
             local_traces = os.path.join(slurm_traces, ts_dirs[-1])
@@ -586,9 +662,13 @@ class TestSlurmScheduler:
             # Cleanup: cancel job (traces stay on host for inspection)
             if job_id:
                 _flowsim_cli(
-                    "cancel", "--scheduler", "slurm",
-                    "--job", job_id,
-                    "--slurm-cli-prefix", _SLURM_CLI_PREFIX,
+                    "cancel",
+                    "--scheduler",
+                    "slurm",
+                    "--job",
+                    job_id,
+                    "--slurm-cli-prefix",
+                    _SLURM_CLI_PREFIX,
                 )
 
 
@@ -604,7 +684,9 @@ _SWEEP_POINTS = [
 ]
 
 
-def _assert_sweep_output(host_output_dir: str, points: list[tuple[int, int, int]]) -> None:
+def _assert_sweep_output(
+    host_output_dir: str, points: list[tuple[int, int, int]]
+) -> None:
     """Validate that every sweep point produced traces and parsed CSVs."""
     for bs, il, ctx in points:
         tag = f"bs{bs}_input{il}_ctx{ctx}"
@@ -617,9 +699,9 @@ def _assert_sweep_output(host_output_dir: str, points: list[tuple[int, int, int]
     assert os.path.isfile(summary_path), f"Missing {summary_path}"
     with open(summary_path) as f:
         summary = json.load(f)
-    assert len(summary) == len(points), (
-        f"Expected {len(points)} entries in sweep_summary.json, got {len(summary)}"
-    )
+    assert len(summary) == len(
+        points
+    ), f"Expected {len(points)} entries in sweep_summary.json, got {len(summary)}"
     for entry in summary:
         assert entry["traces"] > 0, f"Point {entry} has 0 traces"
 
@@ -637,16 +719,26 @@ class TestLocalSweep:
 
         r = _flowsim_cli(
             "submit",
-            "--scheduler", "local",
-            "--collect", "perf",
-            "--model-path", MODEL,
-            "--tp", "1",
-            "--decode-tokens", "2",
-            "--warmup-n", "2",
-            "--gpus", "1",
-            "--local-gpus", "0",
-            "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
-            "--sweep", *sweep_args,
+            "--scheduler",
+            "local",
+            "--collect",
+            "perf",
+            "--model-path",
+            MODEL,
+            "--tp",
+            "1",
+            "--decode-tokens",
+            "2",
+            "--warmup-n",
+            "2",
+            "--gpus",
+            "1",
+            "--local-gpus",
+            "0",
+            "--extra-server-opts",
+            f"--load-format {LOAD_FORMAT}",
+            "--sweep",
+            *sweep_args,
         )
         combined = r.stdout + r.stderr
         if r.returncode != 0:
@@ -660,9 +752,9 @@ class TestLocalSweep:
             if "Traces:" in line:
                 output_dir = line.split("Traces:", 1)[1].strip()
                 break
-        assert output_dir and os.path.isdir(output_dir), (
-            f"Could not find traces dir in output:\n{combined[-1000:]}"
-        )
+        assert output_dir and os.path.isdir(
+            output_dir
+        ), f"Could not find traces dir in output:\n{combined[-1000:]}"
 
         _assert_sweep_output(output_dir, _SWEEP_POINTS)
         _assert_logs(output_dir)
@@ -680,22 +772,34 @@ class TestLocalSweep:
         try:
             r = _flowsim_cli(
                 "submit",
-                "--scheduler", "local",
-                "--collect", "perf",
-                "--model-path", MODEL,
-                "--tp", "1",
-                "--decode-tokens", "2",
-                "--warmup-n", "2",
-                "--gpus", "1",
-                "--local-gpus", "0",
-                "--extra-server-opts", f"--load-format {LOAD_FORMAT}",
-                "--sweep-file", sweep_file,
+                "--scheduler",
+                "local",
+                "--collect",
+                "perf",
+                "--model-path",
+                MODEL,
+                "--tp",
+                "1",
+                "--decode-tokens",
+                "2",
+                "--warmup-n",
+                "2",
+                "--gpus",
+                "1",
+                "--local-gpus",
+                "0",
+                "--extra-server-opts",
+                f"--load-format {LOAD_FORMAT}",
+                "--sweep-file",
+                sweep_file,
             )
             combined = r.stdout + r.stderr
             if r.returncode != 0:
                 print("STDOUT:", r.stdout[-3000:])
                 print("STDERR:", r.stderr[-3000:])
-            assert r.returncode == 0, f"sweep-file submit failed (exit {r.returncode})"
+            assert (
+                r.returncode == 0
+            ), f"sweep-file submit failed (exit {r.returncode})"
 
             # Find host output dir from submit output
             output_dir = None
@@ -703,9 +807,9 @@ class TestLocalSweep:
                 if "Traces:" in line:
                     output_dir = line.split("Traces:", 1)[1].strip()
                     break
-            assert output_dir and os.path.isdir(output_dir), (
-                f"Could not find traces dir in output:\n{combined[-1000:]}"
-            )
+            assert output_dir and os.path.isdir(
+                output_dir
+            ), f"Could not find traces dir in output:\n{combined[-1000:]}"
 
             _assert_sweep_output(output_dir, _SWEEP_POINTS)
             _assert_logs(output_dir)

@@ -31,11 +31,15 @@ from __future__ import annotations
 import argparse
 import sys
 
-from schedulers.config import cfg_get, load_k8s_config, load_slurm_config, resolve_default
+from schedulers.config import (
+    cfg_get,
+    load_k8s_config,
+    load_slurm_config,
+    resolve_default,
+)
 from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
-
 
 _d = resolve_default
 
@@ -49,7 +53,9 @@ def _add_scheduler_args(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> None:
+def _add_scheduler_specific_args(
+    p: argparse.ArgumentParser, scheduler: str
+) -> None:
     """Add only the args relevant to the chosen scheduler (second pass)."""
     k8s_cfg = load_k8s_config()
     slurm_cfg = load_slurm_config()
@@ -60,7 +66,9 @@ def _add_scheduler_specific_args(p: argparse.ArgumentParser, scheduler: str) -> 
     elif scheduler == "k8s":
         p.add_argument(
             "--k8s-namespace",
-            default=_d("FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"),
+            default=_d(
+                "FLOWSIM_K8S_NAMESPACE", k8s_cfg, "namespace", "default"
+            ),
         )
         p.add_argument(
             "--k8s-kubeconfig",
@@ -103,7 +111,9 @@ def _build_scheduler(args: argparse.Namespace):
         )
 
 
-def _parse_two_pass(p: argparse.ArgumentParser, argv: list[str] | None = None) -> argparse.Namespace:
+def _parse_two_pass(
+    p: argparse.ArgumentParser, argv: list[str] | None = None
+) -> argparse.Namespace:
     """Two-pass parse: peek --scheduler, add scheduler-specific args, full parse."""
     _pre = argparse.ArgumentParser(add_help=False)
     _pre.add_argument("--scheduler", choices=["local", "k8s", "slurm"])
@@ -132,8 +142,15 @@ def main_logs(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Retrieve FlowSim job logs.")
     _add_scheduler_args(p)
     p.add_argument("--job", required=True, help="Job name or ID")
-    p.add_argument("--tail", type=int, default=100, help="Number of log lines (default: 100)")
-    p.add_argument("--follow", "-f", action="store_true", help="Follow log output")
+    p.add_argument(
+        "--tail",
+        type=int,
+        default=100,
+        help="Number of log lines (default: 100)",
+    )
+    p.add_argument(
+        "--follow", "-f", action="store_true", help="Follow log output"
+    )
     args = _parse_two_pass(p, argv)
 
     scheduler = _build_scheduler(args)
@@ -148,7 +165,11 @@ def main_logs(argv: list[str] | None = None) -> None:
 def main_list(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="List FlowSim jobs.")
     _add_scheduler_args(p)
-    p.add_argument("--status", default="", help="Filter by job state (e.g. Running, Succeeded, PENDING)")
+    p.add_argument(
+        "--status",
+        default="",
+        help="Filter by job state (e.g. Running, Succeeded, PENDING)",
+    )
     args = _parse_two_pass(p, argv)
 
     scheduler = _build_scheduler(args)
@@ -159,12 +180,17 @@ def main_list(argv: list[str] | None = None) -> None:
             return
         # Print table header
         headers = list(jobs[0].keys())
-        widths = {h: max(len(h), max(len(str(j.get(h, ""))) for j in jobs)) for h in headers}
+        widths = {
+            h: max(len(h), max(len(str(j.get(h, ""))) for j in jobs))
+            for h in headers
+        }
         header_line = "  ".join(h.upper().ljust(widths[h]) for h in headers)
         print(header_line)
         print("-" * len(header_line))
         for job in jobs:
-            print("  ".join(str(job.get(h, "")).ljust(widths[h]) for h in headers))
+            print(
+                "  ".join(str(job.get(h, "")).ljust(widths[h]) for h in headers)
+            )
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)

@@ -176,7 +176,9 @@ class SlurmScheduler(BaseScheduler):
                 f"sbatch failed (exit {r.returncode}):\n{r.stderr}"
             )
 
-        job_id = r.stdout.strip().split(";")[0]  # parsable: "jobid" or "jobid;cluster"
+        job_id = r.stdout.strip().split(";")[
+            0
+        ]  # parsable: "jobid" or "jobid;cluster"
         return JobResult(
             job_id=job_id,
             scheduler="slurm",
@@ -193,7 +195,9 @@ class SlurmScheduler(BaseScheduler):
         """Query Slurm job status."""
         return self._status_cli(job_id)
 
-    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+    def logs(
+        self, job_id: str, *, tail: int = 100, follow: bool = False
+    ) -> str:
         """Show Slurm job log information."""
         return self._logs_cli(job_id, tail=tail, follow=follow)
 
@@ -216,7 +220,11 @@ class SlurmScheduler(BaseScheduler):
         # (completed jobs stay in memory for MinJobAge seconds, default 300s)
         r = self._cli_run("scontrol", "show", "job", job_id)
         if r.returncode != 0 or not r.stdout.strip():
-            return {"state": "Unknown", "message": f"No job found with ID {job_id}", "output_hint": ""}
+            return {
+                "state": "Unknown",
+                "message": f"No job found with ID {job_id}",
+                "output_hint": "",
+            }
 
         # Parse key=value output
         fields: dict[str, str] = {}
@@ -258,7 +266,9 @@ class SlurmScheduler(BaseScheduler):
             "output_hint": output_file,
         }
 
-    def _logs_cli(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+    def _logs_cli(
+        self, job_id: str, *, tail: int = 100, follow: bool = False
+    ) -> str:
         info = self._status_cli(job_id)
         output_file = info.get("output_hint", "")
 
@@ -289,7 +299,10 @@ class SlurmScheduler(BaseScheduler):
 
     def _list_jobs_cli(self, *, status_filter: str = "") -> list[dict]:
         r = self._cli_run(
-            "squeue", "-o", "%i|%j|%T|%P|%N", "-h",
+            "squeue",
+            "-o",
+            "%i|%j|%T|%P|%N",
+            "-h",
         )
         if r.returncode != 0:
             raise RuntimeError(f"squeue failed: {r.stderr}")
@@ -304,11 +317,13 @@ class SlurmScheduler(BaseScheduler):
             state = parts[2] if len(parts) > 2 else "UNKNOWN"
             if status_filter and state.upper() != status_filter.upper():
                 continue
-            result.append({
-                "job_id": parts[0] if parts else "",
-                "name": name,
-                "state": state,
-                "partition": parts[3] if len(parts) > 3 else "",
-                "nodes": parts[4] if len(parts) > 4 else "",
-            })
+            result.append(
+                {
+                    "job_id": parts[0] if parts else "",
+                    "name": name,
+                    "state": state,
+                    "partition": parts[3] if len(parts) > 3 else "",
+                    "nodes": parts[4] if len(parts) > 4 else "",
+                }
+            )
         return result

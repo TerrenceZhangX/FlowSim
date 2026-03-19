@@ -14,9 +14,10 @@ import argparse
 import sys
 from pathlib import Path
 
-
 _CONFIG_DIR = Path.home() / ".flowsim"
-_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "schedulers" / "templates"
+_TEMPLATES_DIR = (
+    Path(__file__).resolve().parent.parent / "schedulers" / "templates"
+)
 
 
 def _cmd_init(argv: list[str]) -> int:
@@ -37,15 +38,19 @@ def _cmd_init(argv: list[str]) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "scheduler", choices=["k8s", "slurm"],
+        "scheduler",
+        choices=["k8s", "slurm"],
         help="Scheduler type",
     )
     parser.add_argument(
-        "--config", "-c", default="",
+        "--config",
+        "-c",
+        default="",
         help="Path to a config YAML to install (default: bundled template)",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Overwrite existing config file",
     )
     args = parser.parse_args(argv)
@@ -53,8 +58,10 @@ def _cmd_init(argv: list[str]) -> int:
     dst = _CONFIG_DIR / f"{args.scheduler}.yaml"
 
     if dst.exists() and not args.force:
-        print(f"Error: {dst} already exists (use --force to overwrite)",
-              file=sys.stderr)
+        print(
+            f"Error: {dst} already exists (use --force to overwrite)",
+            file=sys.stderr,
+        )
         return 1
 
     if args.config:
@@ -67,11 +74,14 @@ def _cmd_init(argv: list[str]) -> int:
         return 1
 
     import shutil
+
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     print(f"Installed {src} → {dst}")
-    print(f"Edit {dst}, then run: flowsim submit --scheduler "
-          f"{args.scheduler} ...")
+    print(
+        f"Edit {dst}, then run: flowsim submit --scheduler "
+        f"{args.scheduler} ..."
+    )
     return 0
 
 

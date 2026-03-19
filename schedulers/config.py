@@ -48,10 +48,12 @@ def _save_yaml(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         import yaml as _y
+
         with open(path, "w") as f:
             _y.safe_dump(data, f, default_flow_style=False, sort_keys=False)
     except ImportError:
         import json as _j
+
         with open(path, "w") as f:
             _j.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
@@ -97,6 +99,8 @@ def cfg_get(cfg: dict, key: str, fallback: str = "") -> str:
     return fallback
 
 
-def resolve_default(env_var: str, cfg: dict, key: str, fallback: str = "") -> str:
+def resolve_default(
+    env_var: str, cfg: dict, key: str, fallback: str = ""
+) -> str:
     """Resolve a config value: env var > config file > fallback."""
     return os.environ.get(env_var, "") or cfg_get(cfg, key, fallback)

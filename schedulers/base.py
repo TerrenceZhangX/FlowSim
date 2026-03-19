@@ -13,8 +13,8 @@ class JobResult:
     """Structured return value from ``submit()``."""
 
     job_id: str
-    scheduler: str          # "local", "k8s", "slurm"
-    state: str              # "Submitted", "Completed", "Failed"
+    scheduler: str  # "local", "k8s", "slurm"
+    state: str  # "Submitted", "Completed", "Failed"
     output_dir: str = ""
     message: str = ""
 
@@ -150,7 +150,9 @@ class BaseScheduler(abc.ABC):
 
     def cancel(self, job_id: str) -> str:
         """Cancel a running or pending job. Returns a status message."""
-        raise NotImplementedError(f"{type(self).__name__} does not support cancel")
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support cancel"
+        )
 
     def status(self, job_id: str) -> dict:
         """Query job status. Returns dict with at least 'state' key.
@@ -163,9 +165,13 @@ class BaseScheduler(abc.ABC):
                 "output_hint": "where to find trace files",
             }
         """
-        raise NotImplementedError(f"{type(self).__name__} does not support status queries")
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support status queries"
+        )
 
-    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+    def logs(
+        self, job_id: str, *, tail: int = 100, follow: bool = False
+    ) -> str:
         """Retrieve recent log output for a job.
 
         Parameters
@@ -177,7 +183,9 @@ class BaseScheduler(abc.ABC):
         follow : bool
             If True, stream logs in real time (blocking).
         """
-        raise NotImplementedError(f"{type(self).__name__} does not support log retrieval")
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support log retrieval"
+        )
 
     def list_jobs(self, *, status_filter: str = "") -> list[dict]:
         """List jobs managed by this scheduler.
@@ -193,7 +201,9 @@ class BaseScheduler(abc.ABC):
         list[dict]
             Each dict has at least ``{"job_id": ..., "state": ..., "name": ...}``.
         """
-        raise NotImplementedError(f"{type(self).__name__} does not support list")
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support list"
+        )
 
     def dry_run(self, spec: ProfileJobSpec) -> str:
         """Render and return the manifest without submitting."""

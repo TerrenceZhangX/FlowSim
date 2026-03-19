@@ -22,6 +22,7 @@ def _k8s_job_state(status) -> str:
         return "Running"
     return "Pending"
 
+
 # Optional: nicer YAML output for dry-run.
 try:
     import yaml as _yaml  # type: ignore[import-untyped]
@@ -102,16 +103,36 @@ class K8sScheduler(BaseScheduler):
         # volumes + mounts
         volume_mounts = [{"name": "dshm", "mountPath": "/dev/shm"}]
         volumes: list[dict] = [
-            {"name": "dshm", "emptyDir": {"medium": "Memory", "sizeLimit": self.shm_size}},
+            {
+                "name": "dshm",
+                "emptyDir": {"medium": "Memory", "sizeLimit": self.shm_size},
+            },
         ]
         if self.pvc_name:
-            volume_mounts.append({"name": "output", "mountPath": spec.output_dir})
-            volumes.append({"name": "output", "persistentVolumeClaim": {"claimName": self.pvc_name}})
+            volume_mounts.append(
+                {"name": "output", "mountPath": spec.output_dir}
+            )
+            volumes.append(
+                {
+                    "name": "output",
+                    "persistentVolumeClaim": {"claimName": self.pvc_name},
+                }
+            )
         elif self.host_output_dir:
             # Mount at base traces dir so the full directory structure
             # (e.g. k8s/{timestamp}/bs1_...) is preserved on the host.
-            volume_mounts.append({"name": "output", "mountPath": "/flowsim/stage_traces"})
-            volumes.append({"name": "output", "hostPath": {"path": self.host_output_dir, "type": "DirectoryOrCreate"}})
+            volume_mounts.append(
+                {"name": "output", "mountPath": "/flowsim/stage_traces"}
+            )
+            volumes.append(
+                {
+                    "name": "output",
+                    "hostPath": {
+                        "path": self.host_output_dir,
+                        "type": "DirectoryOrCreate",
+                    },
+                }
+            )
 
         container = {
             "name": "profiler",
@@ -145,13 +166,19 @@ class K8sScheduler(BaseScheduler):
             "metadata": {
                 "name": job_name,
                 "namespace": self.namespace,
-                "labels": {"app": "flowsim", "component": "profiling", "collect": spec.collect},
+                "labels": {
+                    "app": "flowsim",
+                    "component": "profiling",
+                    "collect": spec.collect,
+                },
             },
             "spec": {
                 "backoffLimit": 0,
                 "ttlSecondsAfterFinished": 86400,
                 "template": {
-                    "metadata": {"labels": {"app": "flowsim", "component": "profiling"}},
+                    "metadata": {
+                        "labels": {"app": "flowsim", "component": "profiling"}
+                    },
                     "spec": pod_spec,
                 },
             },
@@ -202,7 +229,11 @@ class K8sScheduler(BaseScheduler):
             try:
                 k8s_config.load_incluster_config()
             except k8s_config.ConfigException:
-                hint = " Try --k8s-kubeconfig /path/to/kubeconfig." if not self.kubeconfig else ""
+                hint = (
+                    " Try --k8s-kubeconfig /path/to/kubeconfig."
+                    if not self.kubeconfig
+                    else ""
+                )
                 raise RuntimeError(
                     "No valid Kubernetes configuration found. "
                     "Checked kubeconfig file and in-cluster environment." + hint
@@ -226,7 +257,9 @@ class K8sScheduler(BaseScheduler):
         """Query K8s Job status by job name."""
         batch_api, core_api = self._load_k8s()
 
-        job = batch_api.read_namespaced_job(name=job_id, namespace=self.namespace)
+        job = batch_api.read_namespaced_job(
+            name=job_id, namespace=self.namespace
+        )
 
         # Determine state
         state = _k8s_job_state(job.status)
@@ -250,7 +283,9 @@ class K8sScheduler(BaseScheduler):
         else:
             output_hint = "WARNING: no PVC or hostPath configured — traces are lost when pod exits"
 
-        msg_parts = [f"Job: {job_id}  Namespace: {self.namespace}  State: {state}"]
+        msg_parts = [
+            f"Job: {job_id}  Namespace: {self.namespace}  State: {state}"
+        ]
         if pod_statuses:
             msg_parts.append("Pods: " + ", ".join(pod_statuses))
         msg_parts.append(output_hint)
@@ -261,7 +296,9 @@ class K8sScheduler(BaseScheduler):
             "output_hint": output_hint,
         }
 
-    def logs(self, job_id: str, *, tail: int = 100, follow: bool = False) -> str:
+    def logs(
+        self, job_id: str, *, tail: int = 100, follow: bool = False
+    ) -> str:
         """Show where logs are and how to access them for a K8s Job."""
         _, core_api = self._load_k8s()
 
@@ -270,7 +307,9 @@ class K8sScheduler(BaseScheduler):
             label_selector=f"job-name={job_id}",
         )
         if not pods.items:
-            return f"No pods found for job {job_id} in namespace {self.namespace}"
+            return (
+                f"No pods found for job {job_id} in namespace {self.namespace}"
+            )
 
         if follow:
             # Stream logs from the first running/succeeded pod
@@ -300,21 +339,29 @@ class K8sScheduler(BaseScheduler):
         for pod in pods.items:
             name = pod.metadata.name
             parts.append(f"  kubectl logs {name} -n {self.namespace}")
-            parts.append(f"  kubectl logs {name} -n {self.namespace} --tail={tail}")
+            parts.append(
+                f"  kubectl logs {name} -n {self.namespace} --tail={tail}"
+            )
 
         parts.append("")
 
         # Persistent log files
         if self.pvc_name:
-            parts.append(f"Server logs + traces persisted on PVC '{self.pvc_name}'.")
+            parts.append(
+                f"Server logs + traces persisted on PVC '{self.pvc_name}'."
+            )
             parts.append("Copy to local machine:")
             for pod in pods.items:
                 name = pod.metadata.name
                 if pod.status.phase in ("Running", "Succeeded"):
-                    parts.append(f"  kubectl cp {self.namespace}/{name}:/flowsim/stage_traces ./stage_traces")
+                    parts.append(
+                        f"  kubectl cp {self.namespace}/{name}:/flowsim/stage_traces ./stage_traces"
+                    )
                     break
             else:
-                parts.append("  (pod not running — mount the PVC in another pod to retrieve files)")
+                parts.append(
+                    "  (pod not running — mount the PVC in another pod to retrieve files)"
+                )
         elif self.host_output_dir:
             parts.append(f"Server logs + traces at hostPath on the node:")
             parts.append(f"  {self.host_output_dir}/")
@@ -323,7 +370,9 @@ class K8sScheduler(BaseScheduler):
             for pod in pods.items:
                 if pod.spec.node_name:
                     parts.append(f"  Node: {pod.spec.node_name}")
-                    parts.append(f"  scp {pod.spec.node_name}:{self.host_output_dir}/ ./stage_traces/")
+                    parts.append(
+                        f"  scp {pod.spec.node_name}:{self.host_output_dir}/ ./stage_traces/"
+                    )
                     break
 
         return "\n".join(parts)
@@ -345,13 +394,17 @@ class K8sScheduler(BaseScheduler):
 
             created = ""
             if job.metadata.creation_timestamp:
-                created = job.metadata.creation_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                created = job.metadata.creation_timestamp.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
 
-            result.append({
-                "job_id": job.metadata.name,
-                "name": job.metadata.name,
-                "state": state,
-                "namespace": self.namespace,
-                "created": created,
-            })
+            result.append(
+                {
+                    "job_id": job.metadata.name,
+                    "name": job.metadata.name,
+                    "state": state,
+                    "namespace": self.namespace,
+                    "created": created,
+                }
+            )
         return result

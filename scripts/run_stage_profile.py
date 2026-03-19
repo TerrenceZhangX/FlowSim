@@ -799,11 +799,20 @@ def _start_server(
     return proc
 
 
-def _run_perf(args, summary: list[dict], *, bs: Optional[int] = None, input_len: Optional[int] = None, existing_ctx: Optional[int] = None) -> int:
+def _run_perf(
+    args,
+    summary: list[dict],
+    *,
+    bs: Optional[int] = None,
+    input_len: Optional[int] = None,
+    existing_ctx: Optional[int] = None,
+) -> int:
     """Collect traces for a single (bs, input_len, existing_ctx, decode_tokens) point."""
     bs = bs if bs is not None else args.bs
     input_len = input_len if input_len is not None else args.input_len
-    existing_ctx = existing_ctx if existing_ctx is not None else args.existing_ctx
+    existing_ctx = (
+        existing_ctx if existing_ctx is not None else args.existing_ctx
+    )
 
     tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
     sub_dir = os.path.join(args.output_dir, tag)

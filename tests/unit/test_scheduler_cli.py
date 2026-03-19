@@ -15,10 +15,10 @@ from schedulers.k8s import K8sScheduler
 from schedulers.local import LocalScheduler
 from schedulers.slurm import SlurmScheduler
 
-
 # =========================================================================
 # ProfileJobSpec
 # =========================================================================
+
 
 class TestProfileJobSpec:
     """Tests for ProfileJobSpec dataclass methods."""
@@ -72,6 +72,7 @@ class TestProfileJobSpec:
 # =========================================================================
 # K8sScheduler.render
 # =========================================================================
+
 
 class TestK8sScheduler:
     """Tests for K8s Job manifest generation."""
@@ -152,6 +153,7 @@ class TestK8sScheduler:
 # =========================================================================
 # SlurmScheduler.render
 # =========================================================================
+
 
 class TestSlurmScheduler:
     """Tests for Slurm sbatch script generation."""
@@ -238,6 +240,7 @@ class TestSlurmScheduler:
 # LocalScheduler.render
 # =========================================================================
 
+
 class TestLocalScheduler:
     """Tests for local execution backend."""
 
@@ -286,11 +289,13 @@ class TestLocalScheduler:
 # CLI: flowsim init
 # =========================================================================
 
+
 class TestCLIInit:
     """Tests for `flowsim init` subcommand."""
 
     def test_init_no_args_shows_help(self, capsys):
         from scripts.cli import _cmd_init
+
         with pytest.raises(SystemExit) as exc_info:
             _cmd_init([])
         assert exc_info.value.code != 0
@@ -299,6 +304,7 @@ class TestCLIInit:
         config_dir = tmp_path / "flowsim"
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
+
             rc = _cmd_init(["k8s"])
         assert rc == 0
         cfg_file = config_dir / "k8s.yaml"
@@ -317,6 +323,7 @@ class TestCLIInit:
         config_dir = tmp_path / "flowsim"
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
+
             rc = _cmd_init(["slurm"])
         assert rc == 0
         cfg_file = config_dir / "slurm.yaml"
@@ -336,6 +343,7 @@ class TestCLIInit:
 
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
+
             rc = _cmd_init(["slurm"])
         assert rc != 0  # should refuse
 
@@ -346,6 +354,7 @@ class TestCLIInit:
 
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
+
             rc = _cmd_init(["slurm", "--force"])
         assert rc == 0
         content = (config_dir / "slurm.yaml").read_text()
@@ -360,6 +369,7 @@ class TestCLIInit:
         config_dir = tmp_path / "flowsim"
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
+
             rc = _cmd_init(["k8s", "--config", str(user_cfg)])
         assert rc == 0
         installed = config_dir / "k8s.yaml"
@@ -369,6 +379,7 @@ class TestCLIInit:
 
     def test_init_config_missing_file(self):
         from scripts.cli import _cmd_init
+
         rc = _cmd_init(["k8s", "--config", "/nonexistent/path.yaml"])
         assert rc != 0
 
@@ -376,6 +387,7 @@ class TestCLIInit:
 # =========================================================================
 # CLI: flowsim submit (parse/dry-run only, no actual submission)
 # =========================================================================
+
 
 class TestCLISubmit:
     """Tests for `flowsim submit` argument parsing and dry-run."""
@@ -390,6 +402,7 @@ class TestCLISubmit:
         from scripts.submit_profile import main as submit_main
         import io
         from contextlib import redirect_stdout
+
         buf = io.StringIO()
         with redirect_stdout(buf):
             submit_main(list(args))
@@ -397,6 +410,7 @@ class TestCLISubmit:
 
     def test_submit_help(self, capsys):
         from scripts.submit_profile import main as submit_main
+
         with pytest.raises(SystemExit) as exc_info:
             submit_main(["--help"])
         assert exc_info.value.code == 0
@@ -406,14 +420,18 @@ class TestCLISubmit:
 
     def test_submit_missing_required(self):
         from scripts.submit_profile import main as submit_main
+
         with pytest.raises(SystemExit):
             submit_main([])
 
     def test_submit_local_dry_run(self):
         out = self._run(
-            "--scheduler", "local",
-            "--collect", "perf",
-            "--model-path", "Qwen/Qwen3-8B",
+            "--scheduler",
+            "local",
+            "--collect",
+            "perf",
+            "--model-path",
+            "Qwen/Qwen3-8B",
             "--dry-run",
         )
         assert "scripts/run_stage_profile.py" in out
@@ -421,20 +439,28 @@ class TestCLISubmit:
 
     def test_submit_local_dry_run_with_gpus(self):
         out = self._run(
-            "--scheduler", "local",
-            "--collect", "perf",
-            "--model-path", "Qwen/Qwen3-8B",
-            "--local-gpus", "0,1",
+            "--scheduler",
+            "local",
+            "--collect",
+            "perf",
+            "--model-path",
+            "Qwen/Qwen3-8B",
+            "--local-gpus",
+            "0,1",
             "--dry-run",
         )
         assert "device=0,1" in out
 
     def test_submit_k8s_dry_run(self):
         out = self._run(
-            "--scheduler", "k8s",
-            "--collect", "perf",
-            "--model-path", "Qwen/Qwen3-8B",
-            "--k8s-namespace", "default",
+            "--scheduler",
+            "k8s",
+            "--collect",
+            "perf",
+            "--model-path",
+            "Qwen/Qwen3-8B",
+            "--k8s-namespace",
+            "default",
             "--dry-run",
         )
         assert "apiVersion: batch/v1" in out
@@ -442,26 +468,31 @@ class TestCLISubmit:
 
     def test_submit_slurm_dry_run(self):
         out = self._run(
-            "--scheduler", "slurm",
-            "--collect", "perf",
-            "--model-path", "Qwen/Qwen3-8B",
-            "--slurm-partition", "gpu",
+            "--scheduler",
+            "slurm",
+            "--collect",
+            "perf",
+            "--model-path",
+            "Qwen/Qwen3-8B",
+            "--slurm-partition",
+            "gpu",
             "--dry-run",
         )
         assert "#!/bin/bash" in out
         assert "#SBATCH --partition=gpu" in out
 
 
-
 # =========================================================================
 # Config loading
 # =========================================================================
+
 
 class TestConfig:
     """Tests for config file loading and saving."""
 
     def test_save_and_load_yaml(self, tmp_path: Path):
         from schedulers.config import _save_yaml, _load_yaml
+
         data = {"partition": "gpu", "account": "proj"}
         path = tmp_path / "test.yaml"
         _save_yaml(path, data)
@@ -470,6 +501,7 @@ class TestConfig:
 
     def test_cfg_get(self):
         from schedulers.config import cfg_get
+
         cfg = {"key": "value", "empty": ""}
         assert cfg_get(cfg, "key", "default") == "value"
         assert cfg_get(cfg, "empty", "default") == ""
