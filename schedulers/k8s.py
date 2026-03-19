@@ -186,6 +186,11 @@ class K8sScheduler(BaseScheduler):
 
     def submit(self, spec: ProfileJobSpec) -> JobResult:
         """Submit via the ``kubernetes`` Python client (``pip install kubernetes``)."""
+        if not self.pvc_name and not self.host_output_dir:
+            raise ValueError(
+                "No persistent storage configured. "
+                "Set --k8s-pvc or --k8s-host-output-dir to avoid losing traces when the pod exits."
+            )
         batch_api, _ = self._load_k8s()
 
         body = self._build_job_dict(spec)
@@ -281,7 +286,7 @@ class K8sScheduler(BaseScheduler):
         elif self.host_output_dir:
             output_hint = f"Traces at hostPath {self.host_output_dir} on the scheduled node"
         else:
-            output_hint = "WARNING: no PVC or hostPath configured — traces are lost when pod exits"
+            output_hint = "WARNING: no PVC or hostPath configured — traces will be lost when pod exits"
 
         msg_parts = [
             f"Job: {job_id}  Namespace: {self.namespace}  State: {state}"
