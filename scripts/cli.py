@@ -79,15 +79,19 @@ container_mounts: ""
 
 
 def _cmd_init(argv: list[str]) -> int:
-    """Copy an annotated config template to ~/.flowsim/."""
+    """Set up scheduler config under ~/.flowsim/.
+
+    Without --config: writes an annotated template.
+    With --config: copies the user-provided file.
+    """
     parser = argparse.ArgumentParser(
         prog="flowsim init",
         description=(
-            "Generate a scheduler config template under ~/.flowsim/.\n\n"
+            "Set up scheduler config under ~/.flowsim/.\n\n"
             "Examples:\n"
-            "  flowsim init k8s          # creates ~/.flowsim/k8s.yaml\n"
-            "  flowsim init slurm        # creates ~/.flowsim/slurm.yaml\n"
-            "  flowsim init slurm --force # overwrite existing"
+            "  flowsim init k8s                    # write template\n"
+            "  flowsim init k8s --config my.yaml   # use existing file\n"
+            "  flowsim init slurm --force           # overwrite existing"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -96,12 +100,15 @@ def _cmd_init(argv: list[str]) -> int:
         help="Scheduler type",
     )
     parser.add_argument(
+        "--config", "-c", default="",
+        help="Path to an existing config YAML to install",
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="Overwrite existing config file",
     )
     args = parser.parse_args(argv)
 
-    templates = {"k8s": _K8S_TEMPLATE, "slurm": _SLURM_TEMPLATE}
     dst = _CONFIG_DIR / f"{args.scheduler}.yaml"
 
     if dst.exists() and not args.force:
@@ -110,10 +117,21 @@ def _cmd_init(argv: list[str]) -> int:
         return 1
 
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    dst.write_text(templates[args.scheduler])
-    print(f"Created {dst}")
-    print("Edit the file, then run: flowsim submit --scheduler "
-          f"{args.scheduler} ...")
+
+    if args.config:
+        src = Path(args.config).expanduser()
+        if not src.is_file():
+            print(f"Error: config file not found: {src}", file=sys.stderr)
+            return 1
+        import shutil
+        shutil.copy2(src, dst)
+        print(f"Installed {src} → {dst}")
+    else:
+        templates = {"k8s": _K8S_TEMPLATE, "slurm": _SLURM_TEMPLATE}
+        dst.write_text(templates[args.scheduler])
+        print(f"Created {dst}")
+        print("Edit the file, then run: flowsim submit --scheduler "
+              f"{args.scheduler} ...")
     return 0
 
 

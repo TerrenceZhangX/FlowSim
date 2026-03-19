@@ -352,6 +352,26 @@ class TestCLIInit:
         assert "partition:" in content
         assert "existing" not in content
 
+    def test_init_config_copies_file(self, tmp_path: Path):
+        # User has an existing config
+        user_cfg = tmp_path / "my-k8s.yaml"
+        user_cfg.write_text("namespace: prod\nkubeconfig: /etc/kube\n")
+
+        config_dir = tmp_path / "flowsim"
+        with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
+            from scripts.cli import _cmd_init
+            rc = _cmd_init(["k8s", "--config", str(user_cfg)])
+        assert rc == 0
+        installed = config_dir / "k8s.yaml"
+        assert installed.exists()
+        cfg = yaml.safe_load(installed.read_text())
+        assert cfg["namespace"] == "prod"
+
+    def test_init_config_missing_file(self):
+        from scripts.cli import _cmd_init
+        rc = _cmd_init(["k8s", "--config", "/nonexistent/path.yaml"])
+        assert rc != 0
+
 
 # =========================================================================
 # CLI: flowsim submit (parse/dry-run only, no actual submission)
