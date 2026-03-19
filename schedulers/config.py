@@ -23,40 +23,22 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Optional: try PyYAML, fall back to JSON
-try:
-    import yaml as _yaml
+import yaml as _yaml
 
-    def _load_yaml(path: Path) -> dict:
-        with open(path) as f:
-            return _yaml.safe_load(f) or {}
 
-except ImportError:
-    import json as _json
-
-    def _load_yaml(path: Path) -> dict:  # type: ignore[misc]
-        """Fallback: accept JSON (valid YAML 1.2 subset)."""
-        with open(path) as f:
-            return _json.load(f)
+def _load_yaml(path: Path) -> dict:
+    with open(path) as f:
+        return _yaml.safe_load(f) or {}
 
 
 _CONFIG_DIR = Path.home() / ".flowsim"
 
 
 def _save_yaml(path: Path, data: dict) -> None:
-    """Write a dict to a YAML file (uses PyYAML if available, else JSON)."""
+    """Write a dict to a YAML file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import yaml as _y
-
-        with open(path, "w") as f:
-            _y.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-    except ImportError:
-        import json as _j
-
-        with open(path, "w") as f:
-            _j.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+    with open(path, "w") as f:
+        _yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 def _resolve_path(env_var: str, filename: str) -> Path | None:

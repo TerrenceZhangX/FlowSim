@@ -14,13 +14,13 @@ dependencies = [
     "perfetto>=0.7",
     "numpy>=1.24",
     "pandas>=1.5",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
 # Scheduler backends -------------------------------------------------------
 k8s = [
     "kubernetes>=27.0",    # K8s Python client for remote job submission
-    "PyYAML>=6.0",         # nicer YAML dry-run output (json fallback w/o this)
 ]
 slurm = []                 # Slurm REST API uses stdlib urllib only
 
