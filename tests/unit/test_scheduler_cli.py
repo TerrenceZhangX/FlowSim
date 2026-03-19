@@ -295,76 +295,39 @@ class TestCLIInit:
             _cmd_init([])
         assert exc_info.value.code != 0
 
-    def test_init_k8s_help(self, capsys):
-        from scripts.cli import _cmd_init
-        with pytest.raises(SystemExit) as exc_info:
-            _cmd_init(["k8s", "--help"])
-        assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "--kubeconfig" in out
-        assert "--namespace" in out
-
-    def test_init_slurm_help(self, capsys):
-        from scripts.cli import _cmd_init
-        with pytest.raises(SystemExit) as exc_info:
-            _cmd_init(["slurm", "--help"])
-        assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "--cli-prefix" in out
-        assert "--partition" in out
-
-    def test_init_k8s_missing_required(self):
-        from scripts.cli import _cmd_init
-        with pytest.raises(SystemExit) as exc_info:
-            _cmd_init(["k8s"])
-        assert exc_info.value.code != 0
-
-    def test_init_slurm_missing_required(self):
-        from scripts.cli import _cmd_init
-        with pytest.raises(SystemExit) as exc_info:
-            _cmd_init(["slurm"])
-        assert exc_info.value.code != 0
-
-    def test_init_k8s_bad_kubeconfig(self):
-        from scripts.cli import _cmd_init
-        rc = _cmd_init(["k8s", "--kubeconfig", "/nonexistent/path", "--namespace", "ns"])
-        assert rc != 0
-
-    def test_init_k8s_saves_config(self, tmp_path: Path):
-        # Create a fake kubeconfig
-        kube = tmp_path / "kubeconfig"
-        kube.write_text("apiVersion: v1\nclusters: []\n")
-
+    def test_init_k8s_creates_template(self, tmp_path: Path):
         config_dir = tmp_path / "flowsim"
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
-            rc = _cmd_init([
-                "k8s",
-                "--kubeconfig", str(kube),
-                "--namespace", "test-ns",
-            ])
+            rc = _cmd_init(["k8s"])
         assert rc == 0
         cfg_file = config_dir / "k8s.yaml"
         assert cfg_file.exists()
-        cfg = yaml.safe_load(cfg_file.read_text())
-        assert cfg["namespace"] == "test-ns"
-        assert cfg["kubeconfig"] == str(kube)
+        content = cfg_file.read_text()
+        assert "kubeconfig:" in content
+        assert "namespace:" in content
+        # Template should have comments
+        assert content.startswith("#")
+        # Should be valid YAML
+        cfg = yaml.safe_load(content)
+        assert "kubeconfig" in cfg
+        assert "namespace" in cfg
 
-    def test_init_slurm_saves_config(self, tmp_path: Path):
+    def test_init_slurm_creates_template(self, tmp_path: Path):
         config_dir = tmp_path / "flowsim"
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
-            rc = _cmd_init([
-                "slurm",
-                "--partition", "gpu",
-                "--account", "proj",
-            ])
+            rc = _cmd_init(["slurm"])
         assert rc == 0
         cfg_file = config_dir / "slurm.yaml"
         assert cfg_file.exists()
-        cfg = yaml.safe_load(cfg_file.read_text())
-        assert cfg["partition"] == "gpu"
-        assert cfg["account"] == "proj"
+        content = cfg_file.read_text()
+        assert "partition:" in content
+        assert "cli_prefix:" in content
+        # Template should have comments
+        assert content.startswith("#")
+        cfg = yaml.safe_load(content)
+        assert "partition" in cfg
 
     def test_init_refuses_overwrite(self, tmp_path: Path):
         config_dir = tmp_path / "flowsim"
@@ -373,11 +336,7 @@ class TestCLIInit:
 
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
-            rc = _cmd_init([
-                "slurm",
-                "--partition", "gpu",
-                "--account", "proj",
-            ])
+            rc = _cmd_init(["slurm"])
         assert rc != 0  # should refuse
 
     def test_init_force_overwrite(self, tmp_path: Path):
@@ -387,15 +346,11 @@ class TestCLIInit:
 
         with mock.patch("scripts.cli._CONFIG_DIR", config_dir):
             from scripts.cli import _cmd_init
-            rc = _cmd_init([
-                "slurm",
-                "--partition", "gpu",
-                "--account", "proj",
-                "--force",
-            ])
+            rc = _cmd_init(["slurm", "--force"])
         assert rc == 0
-        cfg = yaml.safe_load((config_dir / "slurm.yaml").read_text())
-        assert cfg["partition"] == "gpu"
+        content = (config_dir / "slurm.yaml").read_text()
+        assert "partition:" in content
+        assert "existing" not in content
 
 
 # =========================================================================

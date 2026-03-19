@@ -2,8 +2,8 @@
 
 Usage::
 
-    flowsim init k8s --kubeconfig ~/.kube/config --namespace ml-team ...
-    flowsim init slurm --partition gpu --account proj ...
+    flowsim init k8s            # create ~/.flowsim/k8s.yaml template
+    flowsim init slurm          # create ~/.flowsim/slurm.yaml template
     flowsim submit --scheduler k8s --collect perf --model-path ...
     flowsim submit ... --dry-run   # debug: preview manifest
 """
@@ -17,110 +17,103 @@ from pathlib import Path
 
 _CONFIG_DIR = Path.home() / ".flowsim"
 
+# ---- Annotated config templates (written by `flowsim init`) ----
 
-def _init_k8s_parser(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("k8s", help="Configure Kubernetes scheduler")
-    p.add_argument("--kubeconfig", required=True,
-                   help="Path to kubeconfig file (REQUIRED)")
-    p.add_argument("--context", default="",
-                   help="Kubeconfig context (empty = current-context)")
-    p.add_argument("--namespace", required=True,
-                   help="Kubernetes namespace (REQUIRED)")
-    p.add_argument("--pvc", default="",
-                   help="PVC name for trace output")
-    p.add_argument("--host-output-dir", default="",
-                   help="hostPath alternative to PVC")
-    p.add_argument("--service-account", default="",
-                   help="Service account for the job pod")
-    p.add_argument("--shm-size", default="16Gi",
-                   help="Shared memory size (default: 16Gi)")
-    p.add_argument("--runtime-class-name", default="",
-                   help="RuntimeClass for pod (e.g. 'nvidia' for CDI mode)")
-    p.add_argument("--force", action="store_true",
-                   help="Overwrite existing config file")
+_K8S_TEMPLATE = """\
+# FlowSim Kubernetes scheduler config
+# Edit this file, then run: flowsim submit --scheduler k8s ...
 
+# Path to kubeconfig file (required)
+kubeconfig: ~/.kube/config
 
-def _init_slurm_parser(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("slurm", help="Configure Slurm scheduler")
-    p.add_argument("--partition", required=True,
-                   help="Slurm partition (REQUIRED)")
-    p.add_argument("--account", default="",
-                   help="Slurm account")
-    p.add_argument("--cli-prefix", default="",
-                   help='CLI mode prefix, e.g. "docker exec -i slurmctld"')
-    p.add_argument("--time", default="02:00:00",
-                   help="Job time limit (default: 02:00:00)")
-    p.add_argument("--constraint", default="",
-                   help="Node constraint")
-    p.add_argument("--container-runtime", default="none",
-                   choices=["docker", "enroot", "none"],
-                   help="Container runtime (default: none)")
-    p.add_argument("--container-mounts", default="",
-                   help="Container mount spec")
-    p.add_argument("--force", action="store_true",
-                   help="Overwrite existing config file")
+# Kubeconfig context (empty = current-context)
+context: ""
+
+# Kubernetes namespace (required)
+namespace: default
+
+# Persistent storage for trace output (set one):
+#   pvc: my-traces-pvc
+#   host_output_dir: /data/flowsim-traces
+pvc: ""
+host_output_dir: ""
+
+# Service account for the job pod (empty = default)
+service_account: ""
+
+# Shared memory size (for /dev/shm in the pod)
+shm_size: "16Gi"
+
+# RuntimeClass (e.g. "nvidia" for CDI GPU passthrough)
+runtime_class_name: ""
+"""
+
+_SLURM_TEMPLATE = """\
+# FlowSim Slurm scheduler config
+# Edit this file, then run: flowsim submit --scheduler slurm ...
+
+# Slurm partition (required)
+partition: gpu
+
+# Billing account (empty = default)
+account: ""
+
+# Job time limit
+time: "02:00:00"
+
+# Node constraint (e.g. "h100")
+constraint: ""
+
+# CLI prefix for remote sbatch/squeue/scancel
+# Examples:
+#   "docker exec -i slurmctld"   (via Docker container)
+#   "ssh login-node"             (via SSH)
+cli_prefix: ""
+
+# Container runtime: docker | enroot | none
+container_runtime: none
+
+# Container mount spec (for enroot/docker)
+container_mounts: ""
+"""
 
 
 def _cmd_init(argv: list[str]) -> int:
-    """Save scheduler config to ~/.flowsim/ from CLI args."""
-    from schedulers.config import _save_yaml
-
+    """Copy an annotated config template to ~/.flowsim/."""
     parser = argparse.ArgumentParser(
         prog="flowsim init",
         description=(
-            "Configure a scheduler and save to ~/.flowsim/.\n\n"
+            "Generate a scheduler config template under ~/.flowsim/.\n\n"
             "Examples:\n"
-            "  flowsim init k8s --kubeconfig ~/.kube/config --namespace ml-team\n"
-            "  flowsim init slurm --partition gpu --account proj"
+            "  flowsim init k8s          # creates ~/.flowsim/k8s.yaml\n"
+            "  flowsim init slurm        # creates ~/.flowsim/slurm.yaml\n"
+            "  flowsim init slurm --force # overwrite existing"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = parser.add_subparsers(dest="scheduler")
-    sub.required = True
-    _init_k8s_parser(sub)
-    _init_slurm_parser(sub)
-
+    parser.add_argument(
+        "scheduler", choices=["k8s", "slurm"],
+        help="Scheduler type",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing config file",
+    )
     args = parser.parse_args(argv)
 
-    if args.scheduler == "k8s":
-        kube_path = Path(args.kubeconfig).expanduser()
-        if not kube_path.is_file():
-            print(f"Error: kubeconfig not found: {kube_path}", file=sys.stderr)
-            return 1
-        cfg = {
-            "kubeconfig": str(kube_path),
-            "context": args.context,
-            "namespace": args.namespace,
-            "pvc": args.pvc,
-            "host_output_dir": args.host_output_dir,
-            "service_account": args.service_account,
-            "shm_size": args.shm_size,
-            "runtime_class_name": args.runtime_class_name,
-        }
-        dst = _CONFIG_DIR / "k8s.yaml"
-
-    elif args.scheduler == "slurm":
-        cfg = {
-            "cli_prefix": args.cli_prefix,
-            "partition": args.partition,
-            "account": args.account,
-            "time": args.time,
-            "constraint": args.constraint,
-            "container_runtime": args.container_runtime,
-            "container_mounts": args.container_mounts,
-        }
-        dst = _CONFIG_DIR / "slurm.yaml"
-    else:
-        parser.print_help()
-        return 1
+    templates = {"k8s": _K8S_TEMPLATE, "slurm": _SLURM_TEMPLATE}
+    dst = _CONFIG_DIR / f"{args.scheduler}.yaml"
 
     if dst.exists() and not args.force:
         print(f"Error: {dst} already exists (use --force to overwrite)",
               file=sys.stderr)
         return 1
 
-    _save_yaml(dst, cfg)
-    print(f"Saved {dst}")
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    dst.write_text(templates[args.scheduler])
+    print(f"Created {dst}")
+    print("Edit the file, then run: flowsim submit --scheduler "
+          f"{args.scheduler} ...")
     return 0
 
 
