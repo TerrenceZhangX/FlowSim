@@ -16,7 +16,7 @@ from pathlib import Path
 
 _CONFIG_DIR = Path.home() / ".flowsim"
 _TEMPLATES_DIR = (
-    Path(__file__).resolve().parent.parent / "schedulers" / "templates"
+    Path(__file__).resolve().parent.parent.parent / "schedulers" / "templates"
 )
 
 
@@ -130,31 +130,31 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_init(remaining)
 
     if args.command == "submit":
-        from scripts.submit_profile import main as submit_main
+        from scripts.cli.submit import main as submit_main
 
         submit_main(remaining)
         return 0
 
     if args.command == "status":
-        from scripts.status_profile import main_status
+        from scripts.cli.manage import main_status
 
         main_status(remaining)
         return 0
 
     if args.command == "logs":
-        from scripts.status_profile import main_logs
+        from scripts.cli.manage import main_logs
 
         main_logs(remaining)
         return 0
 
     if args.command == "list":
-        from scripts.status_profile import main_list
+        from scripts.cli.manage import main_list
 
         main_list(remaining)
         return 0
 
     if args.command == "cancel":
-        from scripts.status_profile import main_cancel
+        from scripts.cli.manage import main_cancel
 
         main_cancel(remaining)
         return 0

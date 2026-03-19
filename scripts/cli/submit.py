@@ -14,7 +14,7 @@ Run locally (no cluster needed):
 
 Dry-run (print Kubernetes Job YAML to stdout):
 
-    python scripts/submit_profile.py \\
+    flowsim submit \\
         --scheduler k8s \\
         --collect perf \\
         --model-path Qwen/Qwen3-235B-A22B-FP8 \\
@@ -27,7 +27,7 @@ Dry-run (print Kubernetes Job YAML to stdout):
 
 Dry-run (print Slurm sbatch script to stdout):
 
-    python scripts/submit_profile.py \\
+    flowsim submit \\
         --scheduler slurm \\
         --collect perf \\
         --model-path Qwen/Qwen3-235B-A22B-FP8 \\
@@ -38,7 +38,7 @@ Dry-run (print Slurm sbatch script to stdout):
 
 Submit directly to cluster:
 
-    python scripts/submit_profile.py \\
+    flowsim submit \\
         --scheduler k8s \\
         ... \\
         --submit

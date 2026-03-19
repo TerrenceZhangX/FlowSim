@@ -400,7 +400,7 @@ class TestCLISubmit:
 
     def _run(self, *args: str, expect_ok: bool = True) -> str:
         """Run submit via the Python function, capture stdout."""
-        from scripts.submit_profile import main as submit_main
+        from scripts.cli.submit import main as submit_main
         import io
         from contextlib import redirect_stdout
 
@@ -410,7 +410,7 @@ class TestCLISubmit:
         return buf.getvalue()
 
     def test_submit_help(self, capsys):
-        from scripts.submit_profile import main as submit_main
+        from scripts.cli.submit import main as submit_main
 
         with pytest.raises(SystemExit) as exc_info:
             submit_main(["--help"])
@@ -420,7 +420,7 @@ class TestCLISubmit:
         assert "local" in out
 
     def test_submit_missing_required(self):
-        from scripts.submit_profile import main as submit_main
+        from scripts.cli.submit import main as submit_main
 
         with pytest.raises(SystemExit):
             submit_main([])
