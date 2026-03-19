@@ -16,81 +16,22 @@ from pathlib import Path
 
 
 _CONFIG_DIR = Path.home() / ".flowsim"
-
-# ---- Annotated config templates (written by `flowsim init`) ----
-
-_K8S_TEMPLATE = """\
-# FlowSim Kubernetes scheduler config
-# Edit this file, then run: flowsim submit --scheduler k8s ...
-
-# Path to kubeconfig file (required)
-kubeconfig: ~/.kube/config
-
-# Kubeconfig context (empty = current-context)
-context: ""
-
-# Kubernetes namespace (required)
-namespace: default
-
-# Persistent storage for trace output (set one):
-#   pvc: my-traces-pvc
-#   host_output_dir: /data/flowsim-traces
-pvc: ""
-host_output_dir: ""
-
-# Service account for the job pod (empty = default)
-service_account: ""
-
-# Shared memory size (for /dev/shm in the pod)
-shm_size: "16Gi"
-
-# RuntimeClass (e.g. "nvidia" for CDI GPU passthrough)
-runtime_class_name: ""
-"""
-
-_SLURM_TEMPLATE = """\
-# FlowSim Slurm scheduler config
-# Edit this file, then run: flowsim submit --scheduler slurm ...
-
-# Slurm partition (required)
-partition: gpu
-
-# Billing account (empty = default)
-account: ""
-
-# Job time limit
-time: "02:00:00"
-
-# Node constraint (e.g. "h100")
-constraint: ""
-
-# CLI prefix for remote sbatch/squeue/scancel
-# Examples:
-#   "docker exec -i slurmctld"   (via Docker container)
-#   "ssh login-node"             (via SSH)
-cli_prefix: ""
-
-# Container runtime: docker | enroot | none
-container_runtime: none
-
-# Container mount spec (for enroot/docker)
-container_mounts: ""
-"""
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "schedulers" / "templates"
 
 
 def _cmd_init(argv: list[str]) -> int:
-    """Set up scheduler config under ~/.flowsim/.
+    """Install a scheduler config to ~/.flowsim/.
 
-    Without --config: writes an annotated template.
-    With --config: copies the user-provided file.
+    Without --config: copies the bundled template from schedulers/templates/.
+    With --config: copies the specified file.
     """
     parser = argparse.ArgumentParser(
         prog="flowsim init",
         description=(
-            "Set up scheduler config under ~/.flowsim/.\n\n"
+            "Install scheduler config under ~/.flowsim/.\n\n"
             "Examples:\n"
-            "  flowsim init k8s                    # write template\n"
-            "  flowsim init k8s --config my.yaml   # use existing file\n"
+            "  flowsim init k8s                    # install bundled template\n"
+            "  flowsim init k8s --config my.yaml   # install your own file\n"
             "  flowsim init slurm --force           # overwrite existing"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -101,7 +42,7 @@ def _cmd_init(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--config", "-c", default="",
-        help="Path to an existing config YAML to install",
+        help="Path to a config YAML to install (default: bundled template)",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -116,22 +57,21 @@ def _cmd_init(argv: list[str]) -> int:
               file=sys.stderr)
         return 1
 
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
     if args.config:
         src = Path(args.config).expanduser()
-        if not src.is_file():
-            print(f"Error: config file not found: {src}", file=sys.stderr)
-            return 1
-        import shutil
-        shutil.copy2(src, dst)
-        print(f"Installed {src} → {dst}")
     else:
-        templates = {"k8s": _K8S_TEMPLATE, "slurm": _SLURM_TEMPLATE}
-        dst.write_text(templates[args.scheduler])
-        print(f"Created {dst}")
-        print("Edit the file, then run: flowsim submit --scheduler "
-              f"{args.scheduler} ...")
+        src = _TEMPLATES_DIR / f"{args.scheduler}.yaml"
+
+    if not src.is_file():
+        print(f"Error: config file not found: {src}", file=sys.stderr)
+        return 1
+
+    import shutil
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    print(f"Installed {src} → {dst}")
+    print(f"Edit {dst}, then run: flowsim submit --scheduler "
+          f"{args.scheduler} ...")
     return 0
 
 

@@ -13,8 +13,9 @@ Slurm:
 Priority (highest → lowest):
     CLI flag  >  env var  >  config file  >  built-in default
 
-Run ``flowsim init k8s`` or ``flowsim init slurm`` to generate
-a config under ``~/.flowsim/``.
+Run ``flowsim init k8s`` or ``flowsim init slurm`` to install
+a config template under ``~/.flowsim/``.  Templates are in
+``schedulers/templates/``.
 """
 
 from __future__ import annotations

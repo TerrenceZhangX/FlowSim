@@ -1,0 +1,27 @@
+# FlowSim Kubernetes scheduler config
+# Copy to ~/.flowsim/k8s.yaml and edit:
+#   flowsim init k8s --config schedulers/templates/k8s.yaml
+
+# Path to kubeconfig file (required)
+kubeconfig: ~/.kube/config
+
+# Kubeconfig context (empty = current-context)
+context: ""
+
+# Kubernetes namespace (required)
+namespace: default
+
+# Persistent storage for trace output (set one):
+#   pvc: my-traces-pvc
+#   host_output_dir: /data/flowsim-traces
+pvc: ""
+host_output_dir: ""
+
+# Service account for the job pod (empty = default)
+service_account: ""
+
+# Shared memory size (for /dev/shm in the pod)
+shm_size: "16Gi"
+
+# RuntimeClass (e.g. "nvidia" for CDI GPU passthrough)
+runtime_class_name: ""
