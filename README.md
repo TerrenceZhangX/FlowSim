@@ -20,6 +20,8 @@ The project supports rapid deployment using Docker, includes scripts for environ
 ## Table of Contents
 
 - [Getting Started](#getting-started)
+- [Stage Profiling](#stage-profiling)
+- [Scheduler Backends](#scheduler-backends)
 - [For Developers](#for-developers)
 - [Risks and limitations](#risks-and-limitations)
 - [License](#license)
@@ -49,208 +51,112 @@ make build-docker
 
 This creates a local image named `flowsim-image` with FlowSim patches already applied to sglang.
 
-### 2. Run Profile → Parse → Simulate
+### 2. Profile (Generate Traces)
 
-Create workspace directories on your host for storing traces and results:
+Use `flowsim submit` to capture stage-separated traces (EXTEND + DECODE), parse them, and run cross-rank analysis — all in one step. See [Stage Profiling](#stage-profiling) for how stages and collection modes work.
 
 ```bash
-mkdir -p /data/flowsim-profile
-mkdir -p /data/flowsim-simulate
+pip install -e .
+flowsim submit --scheduler local \
+    --collect all \
+    --model-path workload/models/configs/Qwen3-235B-A22B \
+    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --extra-server-opts "--load-format dummy"
 ```
 
-#### Step 1: Profile (Generate Traces)
+For K8s / Slurm clusters, see [Scheduler Backends](#scheduler-backends).
 
+**Tip:** Trace files can be visualized at [Perfetto UI](https://ui.perfetto.dev/). For multi-GPU traces, merge them first:
 ```bash
-sudo docker run --gpus=all \
-  -v /data/flowsim-profile:/workspace/profile \
-  -v /data/flowsim-simulate:/workspace/simulate \
-  -w /flowsim \
-  --cap-add=SYS_ADMIN \
-  --network=host \
-  --shm-size 911G \
-  flowsim-image \
-  python scripts/run_profile.py \
-    --profile-dir /workspace/profile \
-    --log-dir /workspace/profile/logs \
-    --bench-timeout 3600 \
-    --server-opts "--model-path /flowsim/workload/models/configs/deepseek/ --load-format dummy --tp 4 --ep 4 --host 0.0.0.0 --port 30001 --attention-backend flashinfer --disable-cuda-graph" \
-    --bench-opts "--backend sglang --host 0.0.0.0 --port 30001 --dataset-name defined-len --prefill-decode-lens 1024:8 --num-prompts 1 --profile"
+python utils/merge_trace.py --trace_dir stage_traces/local/*/bs1_input2048_ctx0 --output merged.json
 ```
 
-**What this does:**
-- Starts an sglang server with profiling enabled
-- Runs benchmark requests against it
-- Generates `*.trace.json.gz` files in `/data/flowsim-profile` (mounted as `/workspace/profile`)
+### 3. Simulate (Run Hardware Simulation)
 
-**Note:** The first run will be slow (~10 minutes) due to DeepGEMM kernel warmup and compilation. For stable performance, avoid using `--rm` flag and reuse the same container using `sudo docker exec -it <container_id> bash`. Subsequent runs with similar configurations will be faster.
-
-**Tip:** 
-- Adjust `--server-opts` and `--bench-opts` to match your model, parallelism (TP/DP/EP), and workload requirements. All `sglang.launch_server` and `bench_serving.py` parameters are supported.
-- Trace files can be visualized using [Perfetto UI](https://ui.perfetto.dev/) by uploading the `.trace.json.gz` files directly.
-- For multi-GPU profiling (TP > 1), merge individual traces into a single file for a global view:
-  ```bash
-  python /flowsim/utils/merge_trace.py \
-    --trace_dir /data/flowsim-profile \
-    --output /data/flowsim-profile/merged_trace.json
-  ```
-  Then visualize the merged trace at [Perfetto UI](https://ui.perfetto.dev/).
-
-#### Step 2: Parse (Convert Trace to CSV)
+Build and start the LLMCompass backend, then submit parsed traces for kernel-level simulation:
 
 ```bash
-sudo docker run --rm \
-  -v /data/flowsim-profile:/workspace/profile \
-  -v /data/flowsim-simulate:/workspace/simulate \
-  -w /flowsim \
-  flowsim-image \
-  python -m scripts.run_parse \
-    --trace-file /workspace/profile/your-trace-name-TP-0.trace.json.gz \
-    --output-dir /workspace/simulate
-```
-
-Replace `your-trace-name-TP-0.trace.json.gz` with the actual filename from step 1.
-
-**What this does:**
-- Parses the trace file
-- Extracts kernel-level information (operator, shapes, dtypes)
-- Generates a CSV file and JSON summary in `/data/flowsim-simulate` (mounted as `/workspace/simulate`)
-
-**Fallback:** If you don't have a GPU or can't run profiling, use the demo trace shipped with the repo:
-
-```bash
-sudo docker run --rm \
-  -v /data/flowsim-simulate:/workspace/simulate \
-  -w /flowsim \
-  flowsim-image \
-  python -m scripts.run_parse \
-    --trace-file /flowsim/demo/deepseekv3-TP-0.trace.json.gz \
-    --output-dir /workspace/simulate
-```
-
-#### Step 3: Simulate (Run Hardware Simulation)
-
-This step requires a running LLMCompass backend. First, build the backend image:
-
-```bash
+# Build backend image
 sudo docker build -t llmcompass-backend -f backend/LLMCompass/Dockerfile backend/LLMCompass/
-```
 
-Then start the backend:
-
-```bash
-# Terminal 1: Start LLMCompass backend
+# Terminal 1: Start backend
 sudo docker run --rm -p 8000:8000 llmcompass-backend
-```
 
-Then in another terminal, run the simulation:
-
-```bash
 # Terminal 2: Run simulation
-sudo docker run --rm \
-  --network=host \
-  -v /data/flowsim-profile:/workspace/profile \
-  -v /data/flowsim-simulate:/workspace/simulate \
+sudo docker run --rm --network=host \
+  -v /data/flowsim:/workspace \
   flowsim-image \
   python -m scripts.run_simulate \
-    --trace-file /workspace/profile/your-trace-name-TP-0.trace.json.gz \
+    --trace-file /workspace/traces/bs1_input2048_ctx0/*-TP-0-EXTEND.trace.json.gz \
     --api-url http://127.0.0.1:8000 \
     --artifact-dir /workspace/simulate/llmcompass
 ```
 
-**What this does:**
-- Parses the trace into kernels
-- Submits each kernel to the LLMCompass backend `/tasks` API
-- Polls until all tasks complete
-- Writes request/response artifacts to `/workspace/simulate/llmcompass`
-
-### 3. Inspect Results
-
-All generated files are available on your host at `/data/`:
+### 4. Inspect Results
 
 ```bash
-ls -lh /data/flowsim-profile/      # Raw trace files
-ls -lh /data/flowsim-simulate/     # Parsed CSV, summary, simulation artifacts
+ls -lh /data/flowsim/traces/       # Stage-separated traces + parsed CSVs
+ls -lh /data/flowsim/simulate/     # Simulation artifacts
 ```
 
 ---
 
-## Stage Profiling (`run_stage_profile.py`)
+## Stage Profiling
 
-`scripts/run_stage_profile.py` is the single entry-point for **stage-separated** profiling: it captures prefill (EXTEND) and decode traces independently, parses them, runs cross-rank kernel analysis, and optionally collects kernel input shapes.
+FlowSim performs **stage-separated** profiling: it captures prefill (EXTEND) and decode traces independently, parses them, runs cross-rank kernel analysis, and optionally collects kernel input shapes.
 
-### Quick reference
+### How stages work
 
 Each profiling request produces **two** stage-separated traces:
 - **EXTEND** (prefill) — processes `input_len` new tokens (with optional `existing_ctx` tokens already in KV cache)
-- **DECODE** — profiler captures `decode-tokens` decode batch steps
+- **DECODE** — captures `decode-tokens` decode batch steps
 
-The profiler captures exactly **one** EXTEND batch and **decode-tokens** DECODE batches per run.
-
-| Flag | Description | Default |
-|---|---|---|
-| `--input-len` | Number of new prefill tokens per request (EXTEND) | 2048 |
-| `--existing-ctx` | Tokens already in KV cache from a prior request (0 = cold prefill) | 0 |
-| `--bs` | Batch size (concurrent requests) | 1 |
-| `--decode-tokens` | Number of decode tokens to generate (= number of decode batches profiled) | 32 |
+### Collection modes
 
 | Mode | What it does |
 |---|---|
-| `--collect perf` | Profile a single (bs, input_len, existing_ctx) point → trace (EXTEND + DECODE) → parse → cross-rank analysis |
-| `--collect shapes` | Re-run **without CUDA graph** to capture kernel input shapes, then merge into timing CSVs (both EXTEND and DECODE) |
-| `--collect all` | Both phases back-to-back (auto-restarts the server in between). Requires `--launch-server`. |
-
-`--collect` is required. Use `perf`, `shapes`, or `all`.
+| `--collect perf` | Profile a single (bs, input_len, existing_ctx) point → trace → parse → cross-rank analysis |
+| `--collect shapes` | Re-run **without CUDA graph** to capture kernel input shapes, then merge into timing CSVs |
+| `--collect all` | Both phases back-to-back (auto-restarts the server in between) |
 
 ### Examples
 
-**Cold prefill** (server already running):
-
 ```bash
-python3 scripts/run_stage_profile.py \
+# Basic profiling
+flowsim submit --scheduler local \
     --collect perf \
-    --bs 1 --input-len 2048 --decode-tokens 32 \
-    --output-dir /workspace/traces \
-    --host 0.0.0.0 --port 30001
-```
+    --model-path workload/models/configs/Qwen3-235B-A22B \
+    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --extra-server-opts "--load-format dummy"
 
-**With existing KV cache context:**
-
-```bash
-python3 scripts/run_stage_profile.py \
+# With existing KV cache context
+flowsim submit --scheduler local \
     --collect perf \
-    --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 32 \
-    --output-dir /workspace/traces \
-    --launch-server \
-    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
-```
+    --model-path workload/models/configs/Qwen3-235B-A22B \
+    --tp 1 --bs 4 --input-len 512 --existing-ctx 4096 --gpus 1 \
+    --extra-server-opts "--load-format dummy"
 
-**Collect shapes only** (requires a no-CUDA-graph server):
-
-```bash
-python3 scripts/run_stage_profile.py \
-    --collect shapes \
-    --output-dir /workspace/sweep_P1_tp4 \
-    --launch-server \
-    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
-```
-
-When `--collect shapes` is used with `--launch-server`, the server is automatically started with `--disable-cuda-graph --disable-cuda-graph-padding`.
-
-**Full pipeline** (perf → auto-restart → shapes → merge):
-
-```bash
-python3 scripts/run_stage_profile.py \
+# Full pipeline (perf + shapes)
+flowsim submit --scheduler local \
     --collect all \
-    --output-dir /workspace/sweep_P1_tp4 \
-    --launch-server \
-    --server-opts "--model-path Qwen/Qwen3-235B-A22B-FP8 --tp 4 --host 0.0.0.0 --port 30001"
+    --model-path workload/models/configs/Qwen3-235B-A22B \
+    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --extra-server-opts "--load-format dummy"
+
+# Multi-point sweep
+flowsim submit --scheduler local \
+    --collect all \
+    --model-path workload/models/configs/Qwen3-235B-A22B \
+    --sweep 1:2048:0 4:2048:0 8:2048:0 --gpus 1 \
+    --extra-server-opts "--load-format dummy"
 ```
 
+For K8s / Slurm clusters, replace `--scheduler local` with `k8s` or `slurm`. See [schedulers/README.md](schedulers/README.md) for full scheduler documentation.
 
 ### Output structure
 
 ```
-sweep_P1_tp4/
+stage_traces/{scheduler}/{YYYYMMDD_HHMMSS}/
 ├── sweep_summary.json
 ├── bs1_input2048_ctx0/
 │   ├── *-TP-*-EXTEND.trace.json.gz
@@ -266,20 +172,19 @@ sweep_P1_tp4/
 
 After `--collect shapes`, each `parsed/TP-*-DECODE.csv` gains a `Dims` column with kernel tensor shapes.
 
-### Helper scripts
-
-| Script | Purpose |
-|---|---|
-| `tests/integration/test_stage_profile_configs.py` | Integration tests for `--collect {perf,shapes,all}` across parallelism configs. Run with `pytest` inside Docker. Filter with `RUN_CONFIGS=P1`. |
-
 ### Utilities (`utils/`)
 
 | File | Purpose |
 |---|---|
 | `utils/cross_rank_agg.py` | Cross-rank kernel aggregation (symmetric collectives → min, asymmetric → max, compute → mean) |
 | `utils/shape_merge.py` | Merge kernel shape data into timing CSVs |
-| `utils/net.py` | Shared networking helpers (`wait_for_port`) |
 | `utils/merge_trace.py` | Merge multi-rank traces into a single Perfetto-compatible file |
+
+---
+
+## Scheduler Backends
+
+For submitting profiling jobs to **local Docker**, **Kubernetes**, or **Slurm** clusters, use the `flowsim` CLI. See [schedulers/README.md](schedulers/README.md) for full documentation including per-scheduler parameters, configuration, and environment variables.
 
 ---
 
