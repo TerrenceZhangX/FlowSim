@@ -206,8 +206,9 @@ stage_traces/{scheduler}/{YYYYMMDD_HHMMSS}/
 │   ├── analysis_extend.json
 │   └── analysis_decode.json
 ├── logs/
-│   ├── server_*.stdout.log
-│   └── server_*.stderr.log
+│   ├── server_*.{stdout,stderr}.log
+│   ├── shape_server_*.{stdout,stderr}.log
+│   └── {job_name}_*.{stdout,stderr}.log
 └── sweep_summary.json
 ```
 
