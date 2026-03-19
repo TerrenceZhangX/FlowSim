@@ -1,43 +1,56 @@
-"""Integration tests for the FlowSim scheduler CLI.
+"""Integration tests for all FlowSim scheduler backends.
 
-Tests all three scheduler backends (local, k8s, slurm) end-to-end.
+How It Works
+------------
+Each test class exercises one scheduler backend end-to-end through the
+``flowsim`` CLI (the same commands a user would run).  The flow is:
 
-* **local** — submits jobs via ``flowsim submit --scheduler local`` which
-  launches Docker containers on the host.  Validates job lifecycle (submit,
-  list, status) and trace CSV correctness (GEMM dim0, FlashAttn seqlen).
-* **k8s**   — submits a real Job to a Kind cluster, retrieves traces via
-  ``docker cp``, and validates trace CSVs.  Auto-sets up the Kind cluster
-  via ``dev-setup.sh`` if not already running.
-* **slurm** — submits a real job to a local docker-compose Slurm cluster,
-  retrieves traces via ``docker cp``, and validates trace CSVs.  Auto-sets
-  up the Slurm cluster via ``dev-setup.sh slurm`` if not already running.
+1. ``flowsim submit`` — submit a ``--collect all`` profiling job.
+2. ``flowsim list``   — verify the job appears in the listing.
+3. ``flowsim status`` — poll until Completed / Succeeded (up to 20 min).
+4. Validate outputs on the host file system.
+
+Infrastructure is auto-provisioned by session-scoped fixtures:
+
+* **Local** — uses Docker on the host directly (no extra infra).
+* **K8s**   — spins up a Kind cluster via ``dev-setup.sh kind``.
+* **Slurm** — spins up a docker-compose Slurm cluster via
+  ``dev-setup.sh slurm`` (slurmctld + slurmd-0 with GPU 0).
+
+Pass Criteria
+-------------
+* Job reaches Completed/Succeeded within the timeout.
+* Stage-separated trace files exist (EXTEND + DECODE ``.trace.json.gz``).
+* Parsed CSVs exist under ``parsed/`` with non-zero rows.
+* GEMM kernels: EXTEND ``dim0 == bs * input_len``, DECODE ``dim0 == bs``.
+* FlashAttn kernels: EXTEND dims contain ``[bs, input_len + existing_ctx]`` (±1).
+* ``analysis_extend.json`` and ``analysis_decode.json`` are valid JSON.
+* After ``--collect shapes``, ``Dims`` column is present in merged CSVs.
+* Sweep jobs produce per-point subdirs + ``sweep_summary.json``.
+* Log files (stdout/stderr) exist under ``logs/``.
 
 Requirements
 ------------
-* Docker with ``flowsim-image:latest`` built (for local tests).
-* A GPU-equipped host machine (local tests run on the physical host,
-  NOT inside a Docker container).
-* ``tests/integration/infra/dev-setup.sh`` available (Kind and Slurm clusters are
-  automatically created if missing).
-* ``schedulers/`` available on PYTHONPATH.
+* Docker with ``flowsim-image:latest`` built.
+* GPU-equipped host machine.
+* ``tests/integration/infra/dev-setup.sh`` available.
 
 Environment Variables
 ---------------------
 ``MODEL``
-    Model path relative to project root
-    (default: ``workload/models/configs/Qwen3-235B-A22B``).
+    Model path (default: ``workload/models/configs/Qwen3-235B-A22B``).
 ``LOAD_FORMAT``
     Load format (default: ``dummy``).
 
 Usage
 -----
-    # On host (local scheduler tests — needs Docker + GPU):
-    cd FlowSim && python -m pytest \
-        tests/integration/test_scheduler_local.py -v -x -k "local"
+    # All scheduler tests:
+    python -m pytest tests/integration/test_scheduler.py -v -x
 
-    # On host (k8s tests — needs kubeconfig):
-    python -m pytest tests/integration/test_scheduler_local.py \
-        -v -x -k "k8s"
+    # Single backend:
+    python -m pytest tests/integration/test_scheduler.py -v -x -k "local"
+    python -m pytest tests/integration/test_scheduler.py -v -x -k "k8s"
+    python -m pytest tests/integration/test_scheduler.py -v -x -k "slurm"
 """
 
 import ast

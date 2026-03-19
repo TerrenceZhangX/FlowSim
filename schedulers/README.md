@@ -235,7 +235,7 @@ docker compose -f slurm-compose.yaml down -v
 python -m pytest tests/unit/test_scheduler_cli.py -v
 
 # Integration tests
-python -m pytest tests/integration/test_scheduler_local.py::TestK8sScheduler -v -x
-python -m pytest tests/integration/test_scheduler_local.py::TestSlurmScheduler -v -x
+python -m pytest tests/integration/test_scheduler.py::TestK8sScheduler -v -x
+python -m pytest tests/integration/test_scheduler.py::TestSlurmScheduler -v -x
 ```
 
