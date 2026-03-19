@@ -61,14 +61,14 @@ Example — single point
   python scripts/run_stage_profile.py \\
       --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --bs 1 --input-len 2048 --decode-tokens 32 \\
+      --bs 1 --input-len 2048 --decode-tokens 2 \\
       --output-dir /flowsim/stage_traces
 
 Example — with existing KV cache context
   python scripts/run_stage_profile.py \\
       --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 32 \\
+      --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 2 \\
       --output-dir /flowsim/stage_traces
 
 Example — launch server + full pipeline (perf → shapes)
@@ -113,7 +113,7 @@ from scripts import load_sweep_file, parse_sweep_point
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_WARMUP_N = 5
-DEFAULT_DECODE_TOKENS = 32
+DEFAULT_DECODE_TOKENS = 2
 DEFAULT_MAX_PREFILL_TOKENS = 131072
 
 

@@ -22,7 +22,7 @@ flowsim --help
 flowsim submit --scheduler <local|k8s|slurm> \
     --collect <perf|shapes|all> \
     --model-path <model> \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1
+    --tp 1 --bs 1 --input-len 2048 --decode-tokens 2 --gpus 1
 
 # Job lifecycle
 flowsim list   --scheduler <backend>
@@ -50,6 +50,7 @@ flowsim submit --scheduler <backend> \
 | `--bs` | Batch size | `1` |
 | `--input-len` | Input sequence length | `2048` |
 | `--existing-ctx` | Existing KV cache length | `0` |
+| `--decode-tokens` | Decode batches to profile | `2` |
 | `--gpus` | GPU count | `1` |
 | `--image` | Docker image | `flowsim-image:latest` |
 | `--output-dir` | Output directory | `stage_traces/{scheduler}/{timestamp}/` |
@@ -65,7 +66,7 @@ Runs profiling via `docker run` on the host machine.
 flowsim submit --scheduler local \
     --collect all \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 2 --gpus 1 \
     --local-gpus 0 \
     --extra-server-opts "--load-format dummy"
 ```
@@ -95,7 +96,7 @@ flowsim init k8s --config my-cluster.yaml  # or use your own
 flowsim submit --scheduler k8s \
     --collect all \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
 ```
 
@@ -133,7 +134,7 @@ flowsim init slurm --config my-slurm.yaml  # or use your own
 flowsim submit --scheduler slurm \
     --collect all \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 2 --gpus 1 \
     --slurm-partition gpu \
     --extra-server-opts "--load-format dummy"
 ```

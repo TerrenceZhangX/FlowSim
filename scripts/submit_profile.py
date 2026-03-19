@@ -19,7 +19,7 @@ Dry-run (print Kubernetes Job YAML to stdout):
         --collect perf \\
         --model-path Qwen/Qwen3-235B-A22B-FP8 \\
         --tp 4 --gpus 4 \\
-        --bs 1 --input-len 2048 --decode-tokens 32 \\
+        --bs 1 --input-len 2048 --decode-tokens 2 \\
         --image flowsim-image:latest \\
         --k8s-namespace default \\
         --k8s-pvc flowsim-traces \\
@@ -98,7 +98,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     wl.add_argument("--bs", type=int, default=1, help="Batch size")
     wl.add_argument("--input-len", type=int, default=2048)
     wl.add_argument("--existing-ctx", type=int, default=0)
-    wl.add_argument("--decode-tokens", type=int, default=32)
+    wl.add_argument("--decode-tokens", type=int, default=2)
     wl.add_argument("--warmup-n", type=int, default=5)
     wl.add_argument(
         "--disable-chunked-prefill",

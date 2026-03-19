@@ -60,7 +60,7 @@ pip install -e .
 flowsim submit --scheduler local \
     --collect all \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
 ```
 
@@ -109,7 +109,7 @@ FlowSim performs **stage-separated** profiling: it captures prefill (EXTEND) and
 
 Each profiling request produces **two** stage-separated traces:
 - **EXTEND** (prefill) — processes `input_len` new tokens (with optional `existing_ctx` tokens already in KV cache)
-- **DECODE** — captures `decode-tokens` decode batch steps
+- **DECODE** — captures `decode-tokens` decode batch steps (default 2)
 
 ### Collection modes
 
@@ -126,28 +126,28 @@ Each profiling request produces **two** stage-separated traces:
 flowsim submit --scheduler local \
     --collect perf \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
 
 # With existing KV cache context
 flowsim submit --scheduler local \
     --collect perf \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 4 --input-len 512 --existing-ctx 4096 --gpus 1 \
+    --tp 1 --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
 
 # Full pipeline (perf + shapes)
 flowsim submit --scheduler local \
     --collect all \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --tp 1 --bs 1 --input-len 2048 --gpus 1 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
 
 # Multi-point sweep
 flowsim submit --scheduler local \
     --collect all \
     --model-path workload/models/configs/Qwen3-235B-A22B \
-    --sweep 1:2048:0 4:2048:0 8:2048:0 --gpus 1 \
+    --sweep 1:2048:0 4:2048:0 8:2048:0 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
 ```
 
