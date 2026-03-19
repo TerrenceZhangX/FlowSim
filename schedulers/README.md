@@ -110,9 +110,12 @@ Submits profiling jobs as Kubernetes Jobs to a cluster. Supports both PVC and ho
 ### First-Time Setup
 
 ```bash
-# Generate an annotated config template
+# Install the bundled config template
 flowsim init k8s
 # Edit ~/.flowsim/k8s.yaml with your cluster details
+
+# Or install your own config file
+flowsim init k8s --config my-cluster.yaml
 ```
 
 ### Usage
@@ -180,9 +183,12 @@ Generates sbatch scripts and submits them to a Slurm cluster via `sbatch`/`squeu
 ### First-Time Setup
 
 ```bash
-# Generate an annotated config template
+# Install the bundled config template
 flowsim init slurm
 # Edit ~/.flowsim/slurm.yaml with your cluster details
+
+# Or install your own config file
+flowsim init slurm --config my-slurm.yaml
 ```
 
 ### Usage
@@ -268,8 +274,8 @@ docker compose -f slurm-compose.yaml down -v
 
 ## Configuration
 
-Config files are stored in `~/.flowsim/` and generated via `flowsim init`.
-Templates include comments explaining each field — edit to match your cluster:
+Config files are stored in `~/.flowsim/` and installed via `flowsim init`.
+Templates are in `schedulers/templates/` with comments explaining each field:
 
 ```
 ~/.flowsim/
