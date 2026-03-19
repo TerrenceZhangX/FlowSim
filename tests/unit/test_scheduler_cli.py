@@ -35,7 +35,7 @@ class TestProfileJobSpec:
 
     def test_default_job_name(self, spec: ProfileJobSpec):
         name = spec.default_job_name()
-        assert name == "flowsim-perf-qwen3-8b-bs4-il1024"
+        assert name.startswith("flowsim-perf-qwen3-8b-bs4-il1024-")
 
     def test_custom_job_name(self, spec: ProfileJobSpec):
         spec.job_name = "my-job"
@@ -182,6 +182,7 @@ class TestSlurmScheduler:
         script = scheduler.render(spec)
         assert "#SBATCH --partition=gpu-h100" in script
         assert "#SBATCH --gpus-per-node=4" in script
+        assert "#SBATCH --exclusive" in script
         assert "#SBATCH --time=01:00:00" in script
         assert "#SBATCH --account=my-proj" in script
 

@@ -78,6 +78,7 @@ class SlurmScheduler(BaseScheduler):
             f"#SBATCH --partition={self.partition}",
             f"#SBATCH --gpus-per-node={spec.gpus}",
             f"#SBATCH --ntasks=1",
+            f"#SBATCH --exclusive",
             f"#SBATCH --time={self.time_limit}",
             f"#SBATCH --output={spec.output_dir}/{job_name}_%j.log",
         ]
@@ -312,8 +313,6 @@ class SlurmScheduler(BaseScheduler):
                 continue
             parts = line.split("|", 4)
             name = parts[1] if len(parts) > 1 else ""
-            if not name.startswith("flowsim-"):
-                continue
             state = parts[2] if len(parts) > 2 else "UNKNOWN"
             if status_filter and state.upper() != status_filter.upper():
                 continue

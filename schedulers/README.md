@@ -56,6 +56,7 @@ flowsim submit --scheduler <backend> \
 | `--output-dir` | Output directory | `stage_traces/{scheduler}/{timestamp}/` |
 | `--extra-server-opts` | Extra sglang server flags (quoted string) | `""` |
 | `--sweep` | Multi-point sweep `BS:INPUT_LEN:CTX` (repeatable) | empty |
+| `--sweep-file` | File with one `BS:INPUT_LEN:CTX` per line (mutually exclusive with `--sweep`) | none |
 | `--job-name` | Custom job name | auto-generated |
 | `--dry-run` | Print script only | `false` |
 

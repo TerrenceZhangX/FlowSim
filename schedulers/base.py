@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import shlex
+import time
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
@@ -126,14 +127,21 @@ class ProfileJobSpec:
         return " ".join(quoted)
 
     def default_job_name(self) -> str:
-        """Generate a default job name from workload params."""
+        """Generate a default job name from workload params.
+
+        Auto-generated names include a short timestamp suffix
+        (``-MMDD-HHMMSS``) so repeated submissions of the same
+        workload get distinct names.  User-supplied ``--job-name``
+        values are returned as-is.
+        """
         if self.job_name:
             return self.job_name
         model_short = self.model_path.split("/")[-1].lower().replace(".", "-")
+        ts = time.strftime("%m%d-%H%M%S")
         if self.sweep_points:
-            name = f"flowsim-{self.collect}-{model_short}-sweep{len(self.sweep_points)}pt"
+            name = f"flowsim-{self.collect}-{model_short}-sweep{len(self.sweep_points)}pt-{ts}"
         else:
-            name = f"flowsim-{self.collect}-{model_short}-bs{self.bs}-il{self.input_len}"
+            name = f"flowsim-{self.collect}-{model_short}-bs{self.bs}-il{self.input_len}-{ts}"
         return name
 
 
