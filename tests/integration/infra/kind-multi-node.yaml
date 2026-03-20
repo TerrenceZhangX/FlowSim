@@ -29,9 +29,9 @@ nodes:
     extraMounts:
       - hostPath: /dev/null
         containerPath: /var/run/nvidia-container-devices/0
-      - hostPath: /home/administrator/zhangt
+      - hostPath: /path/to/host/workspace
         containerPath: /workspace
         readOnly: true
       # Writable mount so K8s pods can write traces directly to host
-      - hostPath: /home/administrator/zhangt/FlowSim/stage_traces
+      - hostPath: /path/to/host/stage_traces
         containerPath: /host-stage-traces
