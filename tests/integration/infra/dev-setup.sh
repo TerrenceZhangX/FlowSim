@@ -302,7 +302,12 @@ setup_slurm() {
         err "docker compose v2 is required but not available."
     fi
 
+    # HOST_WORKSPACE is used by slurm-compose.yaml for the read-only /workspace mount.
+    REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+    export HOST_WORKSPACE="${HOST_WORKSPACE:-$(dirname "${REPO_ROOT}")}"
+
     log "Building and starting Slurm cluster (slurmctld + 2 slurmd + slurmrestd)..."
+    log "  HOST_WORKSPACE=${HOST_WORKSPACE}"
     docker compose -f "${SCRIPT_DIR}/slurm-compose.yaml" up -d --build
 
     log "Waiting for slurmctld to become ready..."

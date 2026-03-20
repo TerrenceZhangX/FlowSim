@@ -1,6 +1,10 @@
 # Slurm test cluster — slurmctld + 1 compute node (GPU 0)
 #
+# Requires HOST_WORKSPACE env var pointing to the directory containing
+# model weights (mounted read-only into containers as /workspace).
+#
 # Usage:
+#   export HOST_WORKSPACE=/path/to/workspace
 #   cd tests/integration/infra/
 #   docker compose -f slurm-compose.yaml up -d
 #
@@ -33,7 +37,7 @@ x-slurm-base: &slurm-base
     - slurm-etc:/etc/slurm
     - munge-socket:/run/munge
     # Share workspace for model weights / traces
-    - /home/administrator/zhangt:/workspace:ro
+    - ${HOST_WORKSPACE:?set HOST_WORKSPACE to the directory containing model weights}:/workspace:ro
   networks:
     - slurm-net
 
@@ -98,9 +102,9 @@ services:
       - slurm-etc:/etc/slurm:ro
       - munge-key:/etc/munge:ro
       - munge-socket:/run/munge
-      - /home/administrator/zhangt:/workspace:ro
+      - ${HOST_WORKSPACE:?set HOST_WORKSPACE}:/workspace:ro
       # Writable mount so traces appear on host
-      - /home/administrator/zhangt/FlowSim/stage_traces:/flowsim/stage_traces
+      - ../../../stage_traces:/flowsim/stage_traces
       # Cgroup needed by slurmd
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
 
