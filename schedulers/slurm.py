@@ -107,22 +107,26 @@ class SlurmScheduler(BaseScheduler):
         lines.append("")
 
         if self.container_runtime == "docker":
-            mounts = ""
+            # Always mount output_dir so traces/logs persist on the host.
+            mounts = f" -v {spec.output_dir}:{spec.output_dir}"
             if self.container_mounts:
-                mounts = f" -v {self.container_mounts}"
+                mounts += f" -v {self.container_mounts}"
             lines.append(
                 f"docker run --gpus all --ipc=host --shm-size=16g"
                 f"{mounts} -w /flowsim {spec.image} \\"
             )
             lines.append(f"  {cmd}")
         elif self.container_runtime == "enroot":
-            mounts = ""
+            # Always mount output_dir so traces/logs persist on the host.
+            out_mount = f"{spec.output_dir}:{spec.output_dir}"
             if self.container_mounts:
-                mounts = f" --container-mounts={self.container_mounts}"
+                all_mounts = f"{self.container_mounts},{out_mount}"
+            else:
+                all_mounts = out_mount
             lines.append(
                 f"srun --container-image={spec.image}"
                 f" --container-workdir=/flowsim"
-                f"{mounts} \\"
+                f" --container-mounts={all_mounts} \\"
             )
             lines.append(f"  {cmd}")
         elif self.container_runtime == "none":

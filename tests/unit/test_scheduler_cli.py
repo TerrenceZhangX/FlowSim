@@ -204,6 +204,8 @@ class TestSlurmScheduler:
         script = sched.render(spec)
         assert "docker run" in script
         assert "-v /data:/data" in script
+        # output_dir is always auto-mounted
+        assert f"-v {spec.output_dir}:{spec.output_dir}" in script
 
     def test_render_enroot_runtime(self, spec):
         sched = SlurmScheduler(
@@ -212,6 +214,8 @@ class TestSlurmScheduler:
         )
         script = sched.render(spec)
         assert "srun --container-image" in script
+        # output_dir is always auto-mounted
+        assert f"{spec.output_dir}:{spec.output_dir}" in script
 
     def test_render_modules(self, spec):
         sched = SlurmScheduler(
