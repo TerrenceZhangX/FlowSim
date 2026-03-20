@@ -36,14 +36,12 @@ Dry-run (print Slurm sbatch script to stdout):
         --slurm-time 02:00:00 \\
         --dry-run
 
-Submit directly to cluster:
+Submit directly to cluster (omit --dry-run):
 
     flowsim submit \\
         --scheduler k8s \\
-        ... \\
-        --submit
+        ... 
 """
-
 from __future__ import annotations
 
 import argparse
