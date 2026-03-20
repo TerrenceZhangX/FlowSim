@@ -1,0 +1,141 @@
+# Slurm test cluster — slurmctld + 1 compute node (GPU 0)
+#
+# Requires HOST_WORKSPACE env var pointing to the directory containing
+# model weights (mounted read-only into containers as /workspace).
+#
+# Usage:
+#   export HOST_WORKSPACE=/path/to/workspace
+#   cd tests/integration/infra/
+#   docker compose -f slurm-compose.yaml up -d
+#
+#   # Wait for cluster to be ready (~30s)
+#   docker exec slurmctld sinfo
+#
+#   # Get JWT token for REST API
+#   docker exec slurmctld scontrol token lifespan=3600
+#
+#   # Init FlowSim
+#   flowsim init slurm --rest-url http://localhost:6820 \
+#       --partition normal --account default \
+#       --jwt-token-cmd "docker exec slurmctld scontrol token lifespan=3600" \
+#       --force
+#
+#   # Submit a job
+#   flowsim submit --scheduler slurm --collect perf \
+#       --model-path /models/Qwen-7B --gpus 1
+#
+#   # Teardown
+#   docker compose -f slurm-compose.yaml down -v
+#   # Or from project root:
+#   docker compose -f tests/integration/infra/slurm-compose.yaml down -v
+
+x-slurm-base: &slurm-base
+  build:
+    context: .
+    dockerfile: slurm-node.dockerfile
+  volumes:
+    - slurm-etc:/etc/slurm
+    - munge-socket:/run/munge
+    # Share workspace for model weights / traces
+    - ${HOST_WORKSPACE:?set HOST_WORKSPACE to the directory containing model weights}:/workspace:ro
+  networks:
+    - slurm-net
+
+services:
+  # ---- Munge (shared auth daemon) ----
+  munge:
+    <<: *slurm-base
+    container_name: munge
+    hostname: munge
+    command: >
+      bash -c "
+        if [ ! -f /etc/munge/munge.key ]; then
+          mungekey --create --force
+        fi
+        chown munge:munge /etc/munge/munge.key
+        chmod 400 /etc/munge/munge.key
+        mkdir -p /run/munge
+        chown munge:munge /run/munge
+        chmod 755 /run/munge
+        gosu munge munged --foreground
+      "
+    volumes:
+      - munge-key:/etc/munge
+      - munge-socket:/run/munge
+
+  # ---- Controller ----
+  slurmctld:
+    <<: *slurm-base
+    container_name: slurmctld
+    hostname: slurmctld
+    command: >
+      bash -c "
+        mkdir -p /run/munge && chown munge:munge /run/munge
+        until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+        slurmctld -D -vvv
+      "
+    depends_on:
+      - munge
+    volumes:
+      - slurm-etc:/etc/slurm
+      - munge-key:/etc/munge:ro
+      - munge-socket:/run/munge
+      - slurm-state:/var/spool/slurmctld
+
+  # ---- Compute node 0 (GPU 0) ----
+  slurmd-0:
+    <<: *slurm-base
+    container_name: slurmd-0
+    hostname: slurmd-0
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
+    command: >
+      bash -c "
+        mkdir -p /run/munge && chown munge:munge /run/munge
+        until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+        slurmd -D -vvv
+      "
+    depends_on:
+      - slurmctld
+    volumes:
+      - slurm-etc:/etc/slurm:ro
+      - munge-key:/etc/munge:ro
+      - munge-socket:/run/munge
+      - ${HOST_WORKSPACE:?set HOST_WORKSPACE}:/workspace:ro
+      # Writable mount so traces appear on host
+      - ../../../stage_traces:/flowsim/stage_traces
+      # Cgroup needed by slurmd
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+  # ---- REST API (optional, for REST mode) ----
+  # slurmrestd:
+  #   <<: *slurm-base
+  #   container_name: slurmrestd
+  #   hostname: slurmrestd
+  #   command: >
+  #     bash -c "
+  #       mkdir -p /run/munge && chown munge:munge /run/munge
+  #       until [ -S /run/munge/munge.socket.2 ]; do sleep 0.5; done
+  #       gosu slurm slurmrestd -a rest_auth/jwt 0.0.0.0:6820 -vvv -s slurmctld
+  #     "
+  #   depends_on:
+  #     - slurmctld
+  #   ports:
+  #     - "6820:6820"
+  #   cap_add:
+  #     - SYS_ADMIN
+  #   volumes:
+  #     - slurm-etc:/etc/slurm:ro
+  #     - munge-key:/etc/munge:ro
+  #     - munge-socket:/run/munge
+
+volumes:
+  slurm-etc:
+  slurm-state:
+  munge-key:
+  munge-socket:
+
+networks:
+  slurm-net:
+    driver: bridge

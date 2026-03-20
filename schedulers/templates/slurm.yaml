@@ -1,0 +1,27 @@
+# FlowSim Slurm scheduler config
+# Copy to ~/.flowsim/slurm.yaml and edit:
+#   flowsim init slurm --config schedulers/templates/slurm.yaml
+
+# Slurm partition (required)
+partition: gpu
+
+# Billing account (empty = default)
+account: ""
+
+# Job time limit
+time: "02:00:00"
+
+# Node constraint (e.g. "h100")
+constraint: ""
+
+# CLI prefix for remote sbatch/squeue/scancel
+# Examples:
+#   "docker exec -i slurmctld"   (via Docker container)
+#   "ssh login-node"             (via SSH)
+cli_prefix: ""
+
+# Container runtime: docker | enroot | none
+container_runtime: none
+
+# Container mount spec (for enroot/docker)
+container_mounts: ""

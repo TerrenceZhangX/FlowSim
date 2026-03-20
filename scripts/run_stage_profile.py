@@ -61,14 +61,14 @@ Example — single point
   python scripts/run_stage_profile.py \\
       --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --bs 1 --input-len 2048 --decode-tokens 32 \\
+      --bs 1 --input-len 2048 --decode-tokens 2 \\
       --output-dir /flowsim/stage_traces
 
 Example — with existing KV cache context
   python scripts/run_stage_profile.py \\
       --collect perf \\
       --host 0.0.0.0 --port 30001 \\
-      --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 32 \\
+      --bs 4 --input-len 512 --existing-ctx 4096 --decode-tokens 2 \\
       --output-dir /flowsim/stage_traces
 
 Example — launch server + full pipeline (perf → shapes)
@@ -107,12 +107,13 @@ from utils.cross_rank_agg import (
 )
 from utils.net import wait_for_port
 from utils.shape_merge import merge_shapes_dir
+from scripts import load_sweep_file, parse_sweep_point
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_WARMUP_N = 5
-DEFAULT_DECODE_TOKENS = 32
+DEFAULT_DECODE_TOKENS = 2
 DEFAULT_MAX_PREFILL_TOKENS = 131072
 
 
@@ -700,6 +701,31 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         default="/flowsim/stage_traces",
         help="Root directory for trace output",
     )
+
+    sweep = p.add_argument_group("sweep (multi-point profiling)")
+    sweep.add_argument(
+        "--sweep",
+        type=str,
+        nargs="+",
+        default=[],
+        metavar="BS:INPUT_LEN:CTX",
+        help=(
+            "Profile multiple (bs, input_len, existing_ctx) points in one job. "
+            "Each value is a colon-separated tuple, e.g. --sweep 1:2048:0 4:8192:0 16:2048:4096. "
+            "Overrides --bs, --input-len, --existing-ctx."
+        ),
+    )
+    sweep.add_argument(
+        "--sweep-file",
+        type=str,
+        default="",
+        metavar="FILE",
+        help=(
+            "Read sweep points from a file (one BS:INPUT_LEN:CTX per line, "
+            "# comments allowed). Overrides --bs, --input-len, --existing-ctx."
+        ),
+    )
+
     srv = p.add_argument_group("server launch (optional)")
     srv.add_argument(
         "--launch-server",
@@ -714,11 +740,25 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     )
     srv.add_argument(
         "--log-dir",
-        default="/flowsim/tests/test-artifacts",
-        help="Directory for server logs",
+        default="",
+        help="Directory for server logs (default: {output-dir}/logs/)",
     )
 
     return p.parse_args(argv)
+
+
+def _load_sweep_points(args) -> list[tuple[int, int, int]]:
+    """Resolve sweep points from --sweep, --sweep-file, or single-point args."""
+    if args.sweep and args.sweep_file:
+        print("[ERROR] --sweep and --sweep-file are mutually exclusive")
+        raise SystemExit(1)
+
+    if args.sweep:
+        return [parse_sweep_point(s) for s in args.sweep]
+    if args.sweep_file:
+        return load_sweep_file(args.sweep_file)
+    # Single-point from --bs / --input-len / --existing-ctx
+    return [(args.bs, args.input_len, args.existing_ctx)]
 
 
 # ---------------------------------------------------------------------------
@@ -759,11 +799,20 @@ def _start_server(
     return proc
 
 
-def _run_perf(args, summary: list[dict]) -> int:
+def _run_perf(
+    args,
+    summary: list[dict],
+    *,
+    bs: Optional[int] = None,
+    input_len: Optional[int] = None,
+    existing_ctx: Optional[int] = None,
+) -> int:
     """Collect traces for a single (bs, input_len, existing_ctx, decode_tokens) point."""
-    bs = args.bs
-    input_len = args.input_len
-    existing_ctx = args.existing_ctx
+    bs = bs if bs is not None else args.bs
+    input_len = input_len if input_len is not None else args.input_len
+    existing_ctx = (
+        existing_ctx if existing_ctx is not None else args.existing_ctx
+    )
 
     tag = f"bs{bs}_input{input_len}_ctx{existing_ctx}"
     sub_dir = os.path.join(args.output_dir, tag)
@@ -873,6 +922,10 @@ def _write_summary(args, summary: list[dict]) -> None:
 def main(argv: Optional[list] = None) -> int:
     args = parse_args(argv)
 
+    # Default log_dir to {output_dir}/logs/ if not specified
+    if not args.log_dir:
+        args.log_dir = os.path.join(args.output_dir, "logs")
+
     if args.decode_tokens < 2:
         print(
             "[ERROR] --decode-tokens must be >= 2. "
@@ -883,6 +936,14 @@ def main(argv: Optional[list] = None) -> int:
 
     server_proc = None
     summary: list[dict] = []
+    sweep_points = _load_sweep_points(args)
+    is_sweep = len(sweep_points) > 1
+
+    if is_sweep:
+        print(f"\n[sweep] {len(sweep_points)} points to profile:")
+        for i, (bs, il, ctx) in enumerate(sweep_points):
+            print(f"  [{i+1}] bs={bs}  input_len={il}  existing_ctx={ctx}")
+        print()
 
     try:
         # ==================================================================
@@ -904,7 +965,10 @@ def main(argv: Optional[list] = None) -> int:
             print("  PHASE 1 / 2 : PERF COLLECTION")
             print("=" * 60 + "\n")
             server_proc = _start_server(args, disable_cuda_graph=False)
-            _run_perf(args, summary)
+            for idx, (bs, il, ctx) in enumerate(sweep_points):
+                if is_sweep:
+                    print(f"\n[sweep] Point {idx+1}/{len(sweep_points)}")
+                _run_perf(args, summary, bs=bs, input_len=il, existing_ctx=ctx)
             _write_summary(args, summary)
             print("\n[server] Shutting down for shape pass …")
             kill_server(server_proc)
@@ -925,7 +989,10 @@ def main(argv: Optional[list] = None) -> int:
         if args.collect == "perf":
             if args.launch_server:
                 server_proc = _start_server(args, disable_cuda_graph=False)
-            _run_perf(args, summary)
+            for idx, (bs, il, ctx) in enumerate(sweep_points):
+                if is_sweep:
+                    print(f"\n[sweep] Point {idx+1}/{len(sweep_points)}")
+                _run_perf(args, summary, bs=bs, input_len=il, existing_ctx=ctx)
             _write_summary(args, summary)
             return 0
 

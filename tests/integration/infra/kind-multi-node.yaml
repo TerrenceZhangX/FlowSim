@@ -1,0 +1,37 @@
+# Kind cluster config — 1 control-plane + 1 GPU worker node
+#
+# GPU support via CDI mode (NVIDIA k8s-device-plugin official approach).
+# See: https://github.com/NVIDIA/k8s-device-plugin/tree/main/demo/clusters/kind
+#
+# The single worker binds GPU 0.  Change the containerPath index to
+# assign a different GPU.
+#
+# Pre-requisites (host):
+#   - Docker with nvidia as default runtime
+#   - accept-nvidia-visible-devices-as-volume-mounts = true
+#     in /etc/nvidia-container-runtime/config.toml
+#   - kind, kubectl, helm
+#
+# Usage:
+#   ./tests/integration/infra/dev-setup.sh kind
+#
+# Teardown:
+#   ./tests/integration/infra/dev-teardown.sh kind
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+nodes:
+  - role: control-plane
+
+  # Worker — GPU 0 only
+  - role: worker
+    extraMounts:
+      - hostPath: /dev/null
+        containerPath: /var/run/nvidia-container-devices/0
+      - hostPath: /path/to/host/workspace
+        containerPath: /workspace
+        readOnly: true
+      # Writable mount so K8s pods can write traces directly to host
+      - hostPath: /path/to/host/stage_traces
+        containerPath: /host-stage-traces

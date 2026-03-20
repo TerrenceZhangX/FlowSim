@@ -7,3 +7,4 @@ unknown_kernels.json
 /artifacts
 /server_profile
 /server_simulate
+/stage_traces/
