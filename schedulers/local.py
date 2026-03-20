@@ -215,16 +215,23 @@ class LocalScheduler(BaseScheduler):
         )
 
     def cancel(self, job_id: str) -> str:
-        """Stop the Docker container for a local job."""
+        """Stop the Docker container for a local job.
+
+        The Docker container name is truncated to 63 characters when created.
+        To ensure we stop the correct container even if a longer job id is
+        provided (for example, the full job name), apply the same truncation
+        here before calling ``docker stop``.
+        """
+        container_name = job_id[:63]
         proc = subprocess.run(
-            ["docker", "stop", job_id],
+            ["docker", "stop", container_name],
             capture_output=True,
             text=True,
             timeout=30,
         )
         if proc.returncode == 0:
-            return f"Stopped container {job_id}"
-        return f"Could not stop container {job_id}: {proc.stderr.strip()}"
+            return f"Stopped container {container_name}"
+        return f"Could not stop container {container_name}: {proc.stderr.strip()}"
 
     def _find_log_dirs(self) -> list[str]:
         """Find all log directories under stage_traces/{scheduler}/*/logs/."""
