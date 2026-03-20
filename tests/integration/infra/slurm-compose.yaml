@@ -1,4 +1,4 @@
-# Slurm test cluster — slurmctld + 2 compute nodes (GPU 0, GPU 1) + slurmrestd
+# Slurm test cluster — slurmctld + 1 compute node (GPU 0)
 #
 # Usage:
 #   cd tests/integration/infra/
